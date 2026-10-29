@@ -13,6 +13,13 @@ cleanup, and activity history. Workspace and project records are persisted in
 the existing SQLite database and initialized idempotently alongside translation
 history.
 
+Accounts use PBKDF2 password hashes and signed HttpOnly session cookies.
+Project/workspace listing, creation, file preview, job creation, artifact
+uploads, and artifact downloads check workspace membership. Jobs persist queued,
+running, completed, and cancelled states, support idempotency keys, and expose
+bounded local execution. Artifacts are stored by generated ID with measured
+size and SHA-256 metadata.
+
 ## Security decisions
 
 - ZIP paths are normalized with `PurePosixPath`; absolute paths, `..`, empty
@@ -26,7 +33,7 @@ history.
 
 ## Deferred infrastructure
 
-The repository does not yet include SQLAlchemy/Alembic, a user identity
-provider, Redis/Celery, real durable job workers, SSE/WebSockets, or S3. Adding
-those as placeholders would misrepresent Stage 2, so the current API exposes
-measured project and file behavior while retaining explicit extension points.
+The repository does not yet include SQLAlchemy/Alembic, Redis/Celery, SSE/
+WebSockets, or S3. The local worker and filesystem storage are deliberate
+development implementations; production deployment should replace those
+adapters without changing the project/snapshot API.

@@ -4,8 +4,9 @@ Polyglot 2.0 is a developer-focused AI translation and project inspection
 workspace. Stage 1 provides the Monaco translator and protected Gemini/NVIDIA
 NIM/Groq adapters. Stage 2 adds persistent guest workspaces, project
 management, immutable source snapshots, public/authorized GitHub imports,
-safe ZIP imports, file inventory/search/selection, lifecycle actions, and
-activity history.
+safe ZIP imports, file inventory/search/selection, lifecycle actions, activity
+history, password-based accounts, signed HttpOnly sessions, membership checks,
+durable job records, local artifact storage, and job cancellation.
 
 ## Run locally (PowerShell)
 
@@ -34,6 +35,8 @@ API process.
 ## Stage 2 API
 
 - `GET /api/v1/workspaces` and `POST /api/v1/workspaces`
+- `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, and
+  `POST /api/v1/auth/logout`
 - `GET /api/v1/projects?workspace_id=&search=`
 - `POST /api/v1/projects` for blank projects
 - `POST /api/v1/projects/import/zip` with an `application/zip` body
@@ -44,7 +47,9 @@ API process.
 - `POST /api/v1/projects/{id}/files/select` to persist selections
 - `PATCH`, archive/restore, `DELETE`, and activity endpoints for projects
 - `GET /api/v1/jobs` for the durable job-monitoring contract (job execution is
-  not yet enabled for imports)
+  plus `POST /api/v1/jobs` and `POST /api/v1/jobs/{id}/cancel`
+- `POST /api/v1/projects/{id}/artifacts`, `GET /api/v1/projects/{id}/artifacts`,
+  and authorized artifact download
 
 All imported source is kept under `POLYGLOT_DATA_ROOT` and is never executed.
 The ZIP service rejects absolute paths, `..` traversal, symlinks, excessive
@@ -72,11 +77,11 @@ cd backend
 pytest
 ```
 
-## Honest Stage 2 boundaries
+## Remaining infrastructure boundaries
 
-The current foundation uses SQLite and an in-process API. PostgreSQL/Alembic,
-real user authentication, Redis/Celery workers, SSE job progress, S3 artifact
-storage, private GitHub OAuth/App installation, and multi-user authorization
-are not claimed as complete yet. The domain tables and interfaces leave room
-for those integrations without changing the source snapshot contract. Stage 3
-AI orchestration has not been started.
+The current deployment uses SQLite, local artifact storage, and an in-process
+cooperative job runner. PostgreSQL/Alembic, Redis/Celery workers, SSE/WebSocket
+progress, S3 storage, and private GitHub OAuth/App installation are not part of
+the local implementation yet. Password authentication and workspace membership
+authorization are implemented for the local API. Stage 3 AI orchestration has
+not been started.

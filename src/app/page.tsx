@@ -3,6 +3,7 @@
 import { ArrowRightLeft, Copy, Download, FolderOpen, Moon, Plus, Search, Sparkles, Sun } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import { useState } from 'react';
+import type { ChangeEvent } from 'react';
 import { useTranslation } from '@/hooks/useTranslation';
 
 const LANGUAGES = ['python', 'javascript', 'typescript', 'java', 'c', 'c++', 'c#', 'go', 'rust', 'php', 'ruby', 'kotlin', 'swift', 'dart'];
@@ -20,6 +21,7 @@ export default function PolyglotPage() {
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [files, setFiles] = useState<Array<{ relative_path: string; size_bytes: number; selected: number }>>([]);
   const [fileSearch, setFileSearch] = useState('');
+  const [account, setAccount] = useState<string | null>(null);
   const apiUrl = process.env.NEXT_PUBLIC_POLYGLOT_API_URL ?? 'http://127.0.0.1:8000';
   const loadProjects = async () => {
     const response = await fetch(`${apiUrl}/api/v1/projects`);
@@ -38,6 +40,42 @@ export default function PolyglotPage() {
       body: JSON.stringify({ name }),
     });
     await loadProjects();
+  };
+  const importZip = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const response = await fetch(`${apiUrl}/api/v1/projects/import/zip?filename=${encodeURIComponent(file.name)}`, { method: 'POST', body: file });
+    if (response.ok) await loadProjects();
+    event.target.value = '';
+  };
+  const importGitHub = async () => {
+    const repository = window.prompt('GitHub repository (owner/name or HTTPS URL)');
+    if (!repository?.trim()) return;
+    const response = await fetch(`${apiUrl}/api/v1/projects/import/github`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repository }),
+    });
+    if (response.ok) await loadProjects();
+  };
+  const signIn = async () => {
+    const email = window.prompt('Email');
+    const password = email ? window.prompt('Password (12+ characters)') : null;
+    if (!email || !password) return;
+    const response = await fetch(`${apiUrl}/api/v1/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include', body: JSON.stringify({ email, password }),
+    });
+    if (response.ok) setAccount(email);
+  };
+  const register = async () => {
+    const email = window.prompt('Email for new account');
+    const password = email ? window.prompt('Password (12+ characters)') : null;
+    if (!email || !password) return;
+    const response = await fetch(`${apiUrl}/api/v1/auth/register`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include', body: JSON.stringify({ email, password }),
+    });
+    if (response.ok) setAccount(email);
   };
   const visibleFiles = files.filter((file) => file.relative_path.toLowerCase().includes(fileSearch.toLowerCase()));
   const copyOutput = async () => {
@@ -58,12 +96,14 @@ export default function PolyglotPage() {
     <main className={dark ? 'app dark' : 'app'}>
       <header className="topbar">
         <div className="brand"><Sparkles size={18} /><strong>Polyglot 2.0</strong><span>AI code translation</span></div>
-        <button className="icon-button" onClick={() => setDark(!dark)} aria-label="Toggle theme">{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
+        <div className="header-actions"><button className="account-button" onClick={account ? undefined : signIn}>{account ?? 'Sign in'}</button>{!account && <button className="account-button" onClick={register}>Register</button>}<button className="icon-button" onClick={() => setDark(!dark)} aria-label="Toggle theme">{dark ? <Sun size={18} /> : <Moon size={18} />}</button></div>
       </header>
       <section className="workspace">
         <aside className="project-sidebar">
           <div className="sidebar-heading"><span>Projects</span><button className="icon-button" onClick={createProject} title="Create project"><Plus size={16} /></button></div>
           <button className="load-projects" onClick={loadProjects}><FolderOpen size={15} /> Load projects</button>
+          <label className="import-button">Import ZIP<input type="file" accept=".zip,application/zip" onChange={importZip} /></label>
+          <button className="import-button" onClick={importGitHub}>Import GitHub</button>
           {projects.map((project) => <button className={`project-item ${selectedProject === project.id ? 'active' : ''}`} key={project.id} onClick={() => openProject(project.id)}><strong>{project.name}</strong><small>{project.file_count} files · {project.source_type}</small></button>)}
           {selectedProject && <div className="file-browser"><div className="sidebar-heading"><span>Source snapshot</span></div><div className="file-search"><Search size={14} /><input placeholder="Filter files" value={fileSearch} onChange={(event) => setFileSearch(event.target.value)} /></div>{visibleFiles.map((file) => <button className="file-item" key={file.relative_path} onClick={async () => { const response = await fetch(`${apiUrl}/api/v1/projects/${selectedProject}/files/${file.relative_path}`); if (response.ok) translation.setSourceCode((await response.json()).content); }}><code>{file.relative_path}</code><small>{file.size_bytes} bytes</small></button>)}</div>}
         </aside>

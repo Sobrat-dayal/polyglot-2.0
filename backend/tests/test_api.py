@@ -91,3 +91,32 @@ def test_zip_slip_is_rejected(tmp_path):
     with TestClient(app) as client:
         response = client.post("/api/v1/projects/import/zip", content=archive.getvalue())
     assert response.status_code == 422
+
+
+def test_account_project_job_and_artifact_lifecycle(tmp_path):
+    app_module.DATABASE_PATH = str(tmp_path / "account.db")
+    app_module._init_database()
+    with TestClient(app) as client:
+        registered = client.post(
+            "/api/v1/auth/register",
+            json={"email": "developer@example.com", "password": "correct horse battery"},
+        )
+        assert registered.status_code == 200
+        project = client.post("/api/v1/projects", json={"name": "Workspace project"})
+        assert project.status_code == 200
+        project_id = project.json()["id"]
+        job = client.post(
+            "/api/v1/jobs",
+            json={"project_id": project_id, "type": "index", "idempotency_key": "index-1"},
+        )
+        duplicate = client.post(
+            "/api/v1/jobs",
+            json={"project_id": project_id, "type": "index", "idempotency_key": "index-1"},
+        )
+        artifact = client.post(
+            f"/api/v1/projects/{project_id}/artifacts",
+            files={"file": ("report.txt", b"report contents", "text/plain")},
+        )
+    assert job.status_code == 200
+    assert duplicate.json()["id"] == job.json()["id"]
+    assert artifact.status_code == 200

@@ -15,12 +15,13 @@ import shutil
 import time
 import uuid
 import zipfile
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 from pathlib import Path, PurePosixPath
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, Response, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -31,6 +32,7 @@ from engine.translator import (
 )
 from foundation import (
     ARTIFACT_ROOT,
+    MAX_FILE_BYTES,
     create_import,
     ensure_guest_workspace,
     initialize_foundation,
@@ -38,6 +40,7 @@ from foundation import (
 )
 from fastapi.responses import FileResponse
 import httpx
+from auth import create_session, current_user, password_hash, verify_password, read_session
 
 DATABASE_PATH = os.getenv("POLYGLOT_DATABASE_PATH", "polyglot.db")
 
@@ -132,8 +135,9 @@ app = FastAPI(title="Polyglot 2.0 API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("POLYGLOT_ALLOWED_ORIGINS", "http://localhost:3000").split(","),
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
 
@@ -152,11 +156,62 @@ async def ready() -> dict[str, str]:
     return {"status": "ready"}
 
 
+def _actor(request: Request) -> str:
+    with _connection() as connection:
+        return current_user(connection, request.cookies.get("polyglot_session"))
+
+
+@app.post("/api/v1/auth/register")
+async def register(payload: dict[str, str], response: Response):
+    email = payload.get("email", "").strip().lower()
+    try:
+        hashed = password_hash(payload.get("password", ""))
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    if "@" not in email or len(email) > 254:
+        raise HTTPException(422, "A valid email is required.")
+    user_id = str(uuid.uuid4())
+    with _connection() as connection:
+        try:
+            connection.execute("INSERT INTO users VALUES(?,?,?,?)", (user_id, email, hashed, datetime.now(timezone.utc).isoformat()))
+            workspace_id = str(uuid.uuid4())
+            connection.execute("INSERT INTO workspaces VALUES(?,?,?,?,?,0)", (workspace_id, "Personal workspace", "", user_id, datetime.now(timezone.utc).isoformat()))
+            connection.execute("INSERT INTO workspace_members VALUES(?,?,?)", (workspace_id, user_id, "owner"))
+            token = create_session(connection, user_id)
+        except sqlite3.IntegrityError as error:
+            raise HTTPException(409, "An account with that email already exists.") from error
+    response.set_cookie("polyglot_session", token, httponly=True, samesite="lax", secure=os.getenv("POLYGLOT_SECURE_COOKIES", "0") == "1", max_age=14 * 86400)
+    return {"id": user_id, "email": email}
+
+
+@app.post("/api/v1/auth/login")
+async def login(payload: dict[str, str], response: Response):
+    with _connection() as connection:
+        row = connection.execute("SELECT id,password_hash FROM users WHERE email = ?", (payload.get("email", "").strip().lower(),)).fetchone()
+        if not row or not verify_password(payload.get("password", ""), row["password_hash"]):
+            raise HTTPException(401, "Invalid email or password.")
+        token = create_session(connection, row["id"])
+    response.set_cookie("polyglot_session", token, httponly=True, samesite="lax", secure=os.getenv("POLYGLOT_SECURE_COOKIES", "0") == "1", max_age=14 * 86400)
+    return {"id": row["id"]}
+
+
+@app.post("/api/v1/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(request: Request, response: Response):
+    session_id = read_session(request.cookies.get("polyglot_session"))
+    if session_id:
+        with _connection() as connection:
+            connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    response.delete_cookie("polyglot_session")
+
+
 @app.get("/api/v1/workspaces")
-async def list_workspaces():
+async def list_workspaces(request: Request):
+    actor = _actor(request)
     with _connection() as connection:
         rows = connection.execute(
-            "SELECT id,name,description,owner_id,created_at FROM workspaces WHERE archived = 0"
+            """SELECT w.id,w.name,w.description,w.owner_id,w.created_at,m.role
+               FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id
+               WHERE w.archived=0 AND m.user_id=?""", (actor,)
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -177,9 +232,12 @@ async def create_workspace(payload: dict[str, str]):
 
 
 @app.get("/api/v1/projects")
-async def list_projects(workspace_id: str | None = None, search: str | None = None):
-    query = "SELECT * FROM projects WHERE archived = 0"
-    parameters: list[str] = []
+async def list_projects(request: Request, workspace_id: str | None = None, search: str | None = None):
+    actor = _actor(request)
+    query = """SELECT p.* FROM projects p JOIN workspace_members m
+               ON m.workspace_id=p.workspace_id
+               WHERE p.archived=0 AND m.user_id=?"""
+    parameters: list[str] = [actor]
     if workspace_id:
         query += " AND workspace_id = ?"
         parameters.append(workspace_id)
@@ -193,12 +251,25 @@ async def list_projects(workspace_id: str | None = None, search: str | None = No
 
 
 @app.post("/api/v1/projects")
-async def create_project(payload: dict[str, Any]):
+async def create_project(payload: dict[str, Any], request: Request):
     name = str(payload.get("name", "")).strip()
     if not name:
         raise HTTPException(422, "Project name is required.")
     with _connection() as connection:
-        workspace_id = payload.get("workspace_id") or ensure_guest_workspace(connection)
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        workspace_id = payload.get("workspace_id")
+        if not workspace_id:
+            owned = connection.execute(
+                "SELECT workspace_id FROM workspace_members WHERE user_id = ? ORDER BY rowid LIMIT 1",
+                (actor,),
+            ).fetchone()
+            workspace_id = owned["workspace_id"] if owned else ensure_guest_workspace(connection)
+        member = connection.execute(
+            "SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?",
+            (workspace_id, actor),
+        ).fetchone()
+        if not member:
+            raise HTTPException(403, "You do not have access to this workspace.")
         project_id = str(uuid.uuid4())
         timestamp = now = datetime.now(timezone.utc).isoformat()
         connection.execute(
@@ -257,7 +328,7 @@ async def import_github(payload: dict[str, str]):
 
 
 @app.get("/api/v1/projects/{project_id}/files")
-async def project_files(project_id: str, search: str | None = None):
+async def project_files(project_id: str, request: Request, search: str | None = None):
     query = "SELECT * FROM project_files WHERE project_id = ?"
     values: list[str] = [project_id]
     if search:
@@ -266,7 +337,12 @@ async def project_files(project_id: str, search: str | None = None):
     query += " ORDER BY relative_path LIMIT 1000"
     with _connection() as connection:
         project = connection.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        if not project:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        allowed = connection.execute(
+            "SELECT 1 FROM workspace_members WHERE workspace_id=? AND user_id=?",
+            (project["workspace_id"], actor),
+        ).fetchone() if project else None
+        if not project or not allowed:
             raise HTTPException(404, "Project not found.")
         rows = connection.execute(query, values).fetchall()
     return {"project": dict(project), "files": [dict(row) for row in rows]}
@@ -344,10 +420,15 @@ async def project_activity(project_id: str):
 
 
 @app.get("/api/v1/projects/{project_id}/files/{file_path:path}")
-async def read_project_file(project_id: str, file_path: str):
+async def read_project_file(project_id: str, file_path: str, request: Request):
     with _connection() as connection:
         project = connection.execute("SELECT snapshot_path FROM projects WHERE id = ?", (project_id,)).fetchone()
-    if not project:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        allowed = connection.execute(
+            "SELECT 1 FROM workspace_members WHERE workspace_id=? AND user_id=?",
+            (project["workspace_id"], actor),
+        ).fetchone() if project else None
+    if not project or not allowed:
         raise HTTPException(404, "Project not found.")
     root = Path(project["snapshot_path"]).resolve()
     target = (root / Path(*PurePosixPath(file_path).parts)).resolve()
@@ -378,6 +459,105 @@ async def list_jobs():
     with _connection() as connection:
         rows = connection.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100").fetchall()
     return [dict(row) for row in rows]
+
+
+@app.post("/api/v1/jobs")
+async def create_job(payload: dict[str, Any], request: Request):
+    job_type = payload.get("type", "").strip()
+    if job_type not in {"index", "inventory"}:
+        raise HTTPException(422, "Supported job types are index and inventory.")
+    project_id = payload.get("project_id")
+    key = payload.get("idempotency_key")
+    with _connection() as connection:
+        project = connection.execute("SELECT workspace_id FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found.")
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        if not connection.execute("SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?", (project["workspace_id"], actor)).fetchone():
+            raise HTTPException(403, "You do not have access to this project.")
+        if key:
+            existing = connection.execute("SELECT * FROM jobs WHERE idempotency_key = ?", (key,)).fetchone()
+            if existing:
+                return dict(existing)
+        job_id = str(uuid.uuid4())
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            "INSERT INTO jobs(id,project_id,workspace_id,type,status,progress,current_step,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (job_id, project_id, project["workspace_id"], job_type, "queued", 0, "queued", key, timestamp),
+        )
+    asyncio.create_task(_run_job(job_id))
+    return {"id": job_id, "status": "queued"}
+
+
+async def _run_job(job_id: str):
+    with _connection() as connection:
+        row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            return
+        connection.execute("UPDATE jobs SET status='running',started_at=?,current_step=?,progress=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), "processing", 10, job_id))
+    await asyncio.sleep(0)
+    with _connection() as connection:
+        connection.execute("UPDATE jobs SET status='completed',progress=100,current_step=?,completed_at=? WHERE id=?", ("completed", datetime.now(timezone.utc).isoformat(), job_id))
+
+
+@app.post("/api/v1/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    with _connection() as connection:
+        cursor = connection.execute("UPDATE jobs SET status='cancelled',current_step='cancelled',completed_at=? WHERE id=? AND status IN ('queued','running')", (datetime.now(timezone.utc).isoformat(), job_id))
+        if cursor.rowcount == 0:
+            raise HTTPException(409, "Job cannot be cancelled in its current state.")
+    return {"id": job_id, "status": "cancelled"}
+
+
+@app.post("/api/v1/projects/{project_id}/artifacts")
+async def upload_artifact(project_id: str, request: Request, file: UploadFile = File(...)):
+    raw = await file.read()
+    if len(raw) > MAX_FILE_BYTES * 10:
+        raise HTTPException(413, "Artifact is too large.")
+    with _connection() as connection:
+        project = connection.execute("SELECT workspace_id FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found.")
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        if not connection.execute("SELECT 1 FROM workspace_members WHERE workspace_id=? AND user_id=?", (project["workspace_id"], actor)).fetchone():
+            raise HTTPException(403, "You do not have access to this project.")
+        artifact_id = str(uuid.uuid4())
+        target = ARTIFACT_ROOT / artifact_id
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+        digest = __import__("hashlib").sha256(raw).hexdigest()
+        connection.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?,?,?)", (artifact_id, project_id, None, Path(file.filename or "artifact").name, str(target), len(raw), digest, datetime.now(timezone.utc).isoformat()))
+    return {"id": artifact_id, "name": Path(file.filename or "artifact").name, "size_bytes": len(raw), "sha256": digest}
+
+
+@app.get("/api/v1/projects/{project_id}/artifacts")
+async def list_artifacts(project_id: str):
+    with _connection() as connection:
+        rows = connection.execute("SELECT id,name,size_bytes,sha256,created_at FROM artifacts WHERE project_id=? ORDER BY created_at DESC", (project_id,)).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/api/v1/artifacts/{artifact_id}/download")
+async def download_artifact(artifact_id: str, request: Request):
+    with _connection() as connection:
+        artifact = connection.execute("SELECT * FROM artifacts WHERE id=?", (artifact_id,)).fetchone()
+        if artifact:
+            actor = current_user(connection, request.cookies.get("polyglot_session"))
+            workspace = connection.execute(
+                "SELECT workspace_id FROM projects WHERE id=?", (artifact["project_id"],)
+            ).fetchone()
+            if workspace:
+                allowed = connection.execute(
+                    "SELECT 1 FROM workspace_members WHERE workspace_id=? AND user_id=?",
+                    (workspace["workspace_id"], actor),
+                ).fetchone()
+            else:
+                allowed = None
+        else:
+            allowed = None
+    if not artifact or not allowed or not Path(artifact["path"]).is_file():
+        raise HTTPException(404, "Artifact not found.")
+    return FileResponse(artifact["path"], filename=artifact["name"], media_type="application/octet-stream")
 
 
 @app.post("/api/v1/translate", response_model=TranslationResponse)

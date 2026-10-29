@@ -36,6 +36,14 @@ def initialize_foundation(connection: sqlite3.Connection) -> None:
           id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
           owner_id TEXT NOT NULL, created_at TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS users (
+          id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+          id TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL,
+          FOREIGN KEY(user_id) REFERENCES users(id)
+        );
         CREATE TABLE IF NOT EXISTS workspace_members (
           workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL,
           PRIMARY KEY (workspace_id, user_id), FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
@@ -200,4 +208,3 @@ def parse_github_reference(reference: str) -> tuple[str, str]:
             raise ValueError("GitHub reference must include owner and repository.")
         owner, repo = parts[:2]
     return owner, repo.removesuffix(".git")
-
