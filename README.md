@@ -107,6 +107,14 @@ DeepScan source-stack integration, migration plan previews, portability,
 comparison, presets, and an optional Neural Core architecture advisor. See
 [docs/STAGE5_IMPLEMENTATION.md](docs/STAGE5_IMPLEMENTATION.md) for API
 coverage and explicit non-goals.
+
+## Transmute
+
+Stage 6 adds persisted, reviewable deterministic transformations for selected
+JavaScript/TypeScript and Python/JavaScript constructs, authorized file/module
+translation, diffs, validation evidence, and review actions. See
+[docs/STAGE6_IMPLEMENTATION.md](docs/STAGE6_IMPLEMENTATION.md) for the
+supported matrix and explicit limitations.
 ## DeepScan
 
 Stage 4 adds a read-only static analysis baseline for authorized project

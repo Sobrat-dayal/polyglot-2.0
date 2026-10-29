@@ -27,6 +27,7 @@ export default function PolyglotPage() {
   const [searchResults, setSearchResults] = useState<Array<{ path: string; line: number; text: string }>>([]);
   const [stackForge, setStackForge] = useState({ framework: 'fastapi', language: 'python', database: 'postgresql', architecture: 'modular_monolith', api: 'rest' });
   const [stackForgeResult, setStackForgeResult] = useState<{ state: string; issues: Array<{ severity: string; explanation: string }> } | null>(null);
+  const [transmuteResult, setTransmuteResult] = useState<{ status: string; warnings: string[]; validation: { status: string } } | null>(null);
   const apiUrl = process.env.NEXT_PUBLIC_POLYGLOT_API_URL ?? 'http://127.0.0.1:8000';
   const loadProjects = async () => {
     const response = await fetch(`${apiUrl}/api/v1/projects`);
@@ -125,6 +126,21 @@ export default function PolyglotPage() {
     });
     if (response.ok) setStackForgeResult(await response.json());
   };
+  const runTransmute = async () => {
+    if (!translation.sourceCode.trim()) return;
+    const response = await fetch(`${apiUrl}/api/v1/transmute/translate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source_code: translation.sourceCode, source_language: translation.sourceLang,
+        target_language: translation.targetLang, mode: 'type-safe', validate: true,
+      }),
+    });
+    if (response.ok) {
+      const result = await response.json();
+      translation.setTargetCode(result.generated_code);
+      setTransmuteResult(result);
+    }
+  };
   useEffect(() => {
     fetch(`${apiUrl}/api/v1/ai/models`).then((response) => response.ok ? response.json() : []).then(setAiModels).catch(() => setAiModels([]));
   }, [apiUrl]);
@@ -166,6 +182,7 @@ export default function PolyglotPage() {
           <label>Mode<select value={translation.mode} onChange={(event) => translation.setMode(event.target.value)}>{['standard', 'idiomatic', 'educational', 'modernize', 'type-safe', 'performance-oriented'].map((mode) => <option key={mode}>{mode}</option>)}</select></label>
           <label>Routing<select value={translation.routingStrategy} onChange={(event) => translation.setRoutingStrategy(event.target.value)}>{['manual', 'balanced', 'fast', 'economy', 'quality', 'local_only'].map((strategy) => <option key={strategy}>{strategy}</option>)}</select></label>
           <button className="translate" disabled={translation.isLoading || !translation.sourceCode.trim()} onClick={translation.handleTranslate}>{translation.isLoading ? 'Translating…' : 'Translate'}</button>
+          <button className="translate transmute-button" disabled={!translation.sourceCode.trim()} onClick={runTransmute}>Transmute</button>
         </div>
         <div className="model-note">Model: <code>{MODELS[translation.provider]}</code> · {aiModels.filter((model) => model.provider === translation.provider).length} discovered · Routing: {translation.routingStrategy} · Credentials stay on the API server</div>
         <div className="editors">
@@ -174,6 +191,7 @@ export default function PolyglotPage() {
         </div>
         {translation.error && <div className="error" role="alert">{translation.error}<button onClick={translation.handleTranslate}>Retry</button></div>}
         {translation.result && <div className="result-bar"><span>{translation.result.provider} / {translation.result.model} · {translation.result.duration_ms} ms</span><span>{translation.result.explanation ?? 'Translation completed.'}</span></div>}
+        {transmuteResult && <div className="result-bar"><span>Transmute · {transmuteResult.status}</span><span>Validation: {transmuteResult.validation.status}{transmuteResult.warnings.length ? ` · ${transmuteResult.warnings.length} warning(s)` : ''}</span></div>}
         <footer><button onClick={copyOutput} disabled={!translation.targetCode}><Copy size={15} />{copied ? 'Copied' : 'Copy output'}</button><button onClick={downloadOutput} disabled={!translation.targetCode}><Download size={15} />Download</button></footer>
         </div>
       </section>

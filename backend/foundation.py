@@ -115,6 +115,13 @@ def initialize_foundation(connection: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_stackforge_decisions_configuration
           ON stackforge_decisions(configuration_id, created_at);
+        CREATE TABLE IF NOT EXISTS transmute_results (
+          id TEXT PRIMARY KEY, project_id TEXT, source_path TEXT, source_language TEXT NOT NULL,
+          target_language TEXT NOT NULL, request_json TEXT NOT NULL, result_json TEXT NOT NULL,
+          source_sha256 TEXT NOT NULL, generated_sha256 TEXT NOT NULL, review_status TEXT NOT NULL,
+          created_at TEXT NOT NULL, FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_transmute_project ON transmute_results(project_id, created_at);
         """
     )
     DATA_ROOT.mkdir(parents=True, exist_ok=True)

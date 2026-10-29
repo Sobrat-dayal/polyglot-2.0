@@ -26,3 +26,7 @@
   capability. Target configurations are declarative; recipes are not
   executable code, and AI recommendations cannot override deterministic
   incompatibility findings.
+- Transmute must preserve immutable source snapshots, record source/generated
+  hashes and validation evidence, reject unsupported pairs explicitly, and
+  never execute generated or imported repository code without an approved
+  isolated execution boundary.

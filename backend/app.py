@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import hashlib
 import os
 import sqlite3
 import shutil
@@ -61,6 +62,9 @@ from stackforge import (
     estimate_complexity,
     validate_stack,
 )
+from transmute import LANGUAGES as TRANSMUTE_LANGUAGES
+from transmute import TransformRequest, capabilities as transmute_capabilities, transform as transmute_transform, unified_diff
+from transmute import validate_output as transmute_validate_output
 from fastapi.responses import StreamingResponse
 
 DATABASE_PATH = os.getenv("POLYGLOT_DATABASE_PATH", "polyglot.db")
@@ -633,6 +637,140 @@ async def stackforge_presets():
         {"id": "polyglot-web", "name": "Polyglot web baseline", "config": TargetStack(name="Polyglot web baseline", frontends=[{"framework": "nextjs", "language": "typescript", "rendering": "hybrid"}], services=[{"id": "api", "name": "API", "language": "python", "framework": "fastapi", "api_protocol": "rest"}], databases=[{"id": "primary", "engine": "postgresql", "orm": "sqlalchemy"}]).model_dump()},
         {"id": "typed-services", "name": "Typed service baseline", "config": TargetStack(name="Typed service baseline", architecture="modular_monolith", services=[{"id": "api", "name": "API", "language": "typescript", "framework": "nestjs", "api_protocol": "rest"}]).model_dump()},
     ]}
+
+
+def _authorized_snapshot_file(connection: sqlite3.Connection, project_id: str, relative_path: str, actor: str) -> tuple[sqlite3.Row, Path]:
+    project = _authorized_project(connection, project_id, actor)
+    root = Path(project["snapshot_path"]).resolve()
+    target = (root / Path(*PurePosixPath(relative_path).parts)).resolve()
+    if root not in target.parents or not target.is_file():
+        raise HTTPException(404, "Project file not found.")
+    if target.stat().st_size > 2 * 1024 * 1024:
+        raise HTTPException(413, "File is too large for Transmute.")
+    return project, target
+
+
+def _store_transmute(project_id: str | None, source_path: str | None, payload: TransformRequest, result: Any) -> str:
+    result_id = str(uuid.uuid4())
+    source_hash = hashlib.sha256(payload.source_code.encode()).hexdigest()
+    generated_hash = hashlib.sha256(result.code.encode()).hexdigest()
+    with _connection() as connection:
+        connection.execute(
+            "INSERT INTO transmute_results VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (result_id, project_id, source_path, payload.source_language, payload.target_language,
+             json.dumps(payload.model_dump()), json.dumps(result.__dict__),
+             source_hash, generated_hash, "pending", datetime.now(timezone.utc).isoformat()),
+        )
+    return result_id
+
+
+@app.get("/api/v1/transmute/languages")
+async def transmute_languages():
+    return {"items": [{"id": language, "status": "verified" if language in {"python", "javascript", "typescript"} else "syntax_only"} for language in TRANSMUTE_LANGUAGES]}
+
+
+@app.get("/api/v1/transmute/capabilities")
+async def transmute_capability_list():
+    return {"items": transmute_capabilities(), "version": "transmute-1.0"}
+
+
+@app.post("/api/v1/transmute/translate")
+async def transmute_translate(payload: TransformRequest, request: Request):
+    result = await asyncio.to_thread(transmute_transform, payload)
+    result_id = _store_transmute(None, None, payload, result)
+    return {"id": result_id, "status": result.status, "generated_code": result.code, "warnings": result.warnings, "diagnostics": result.diagnostics, "mappings": result.mappings, "validation": result.validation, "recipe": result.recipe}
+
+
+@app.post("/api/v1/projects/{project_id}/transmute/files")
+async def transmute_file(project_id: str, payload: dict[str, Any], request: Request):
+    relative_path = str(payload.get("path", ""))
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _, target = _authorized_snapshot_file(connection, project_id, relative_path, actor)
+    raw = target.read_text(encoding="utf-8", errors="replace")
+    transform_payload = TransformRequest(
+        source_code=raw, source_language=payload.get("source_language") or Path(relative_path).suffix.lstrip(".") or "unknown",
+        target_language=payload.get("target_language", "typescript"), mode=payload.get("mode", "standard"),
+        strategy=payload.get("strategy", "manual"), validate=payload.get("validate", True),
+    )
+    result = await asyncio.to_thread(transmute_transform, transform_payload)
+    result_id = _store_transmute(project_id, relative_path, transform_payload, result)
+    return {"id": result_id, "path": relative_path, "status": result.status, "generated_code": result.code, "warnings": result.warnings, "diagnostics": result.diagnostics, "validation": result.validation}
+
+
+@app.post("/api/v1/projects/{project_id}/transmute/modules")
+async def transmute_module(project_id: str, payload: dict[str, Any], request: Request):
+    paths = payload.get("paths", [])
+    if not isinstance(paths, list) or not paths or len(paths) > 100:
+        raise HTTPException(422, "Select between one and 100 module files.")
+    outputs = []
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        project = _authorized_project(connection, project_id, actor)
+        root = Path(project["snapshot_path"]).resolve()
+        for relative_path in paths:
+            target = (root / Path(*PurePosixPath(str(relative_path)).parts)).resolve()
+            if root not in target.parents or not target.is_file():
+                raise HTTPException(404, "Module file not found.")
+            content = target.read_text(encoding="utf-8", errors="replace")
+            transform_payload = TransformRequest(source_code=content, source_language=payload.get("source_language", "javascript"), target_language=payload.get("target_language", "typescript"), mode=payload.get("mode", "standard"))
+            result = transmute_transform(transform_payload)
+            result_id = _store_transmute(project_id, str(relative_path), transform_payload, result)
+            outputs.append({"id": result_id, "path": str(relative_path), "generated_code": result.code, "status": result.status, "warnings": result.warnings})
+    return {"status": "completed", "files": outputs, "dependency_note": "Imports are preserved; unresolved cross-file references require review."}
+
+
+@app.get("/api/v1/transmute/results/{result_id}")
+async def transmute_result(result_id: str, request: Request):
+    with _connection() as connection:
+        row = connection.execute("SELECT * FROM transmute_results WHERE id=?", (result_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Transmute result not found.")
+        if row["project_id"]:
+            actor = current_user(connection, request.cookies.get("polyglot_session"))
+            _authorized_project(connection, row["project_id"], actor)
+    return {**dict(row), "request": json.loads(row["request_json"]), "result": json.loads(row["result_json"])}
+
+
+@app.get("/api/v1/transmute/results/{result_id}/diff")
+async def transmute_result_diff(result_id: str, request: Request):
+    value = await transmute_result(result_id, request)
+    result = value["result"]
+    return {"id": result_id, "diff": unified_diff(value["request"]["source_code"], result["code"])}
+
+
+@app.get("/api/v1/transmute/results/{result_id}/validation")
+async def transmute_result_validation(result_id: str, request: Request):
+    value = await transmute_result(result_id, request)
+    return {"id": result_id, "validation": value["result"]["validation"], "diagnostics": value["result"]["diagnostics"]}
+
+
+@app.post("/api/v1/transmute/results/{result_id}/approve")
+async def transmute_approve(result_id: str, request: Request):
+    value = await transmute_result(result_id, request)
+    with _connection() as connection:
+        connection.execute("UPDATE transmute_results SET review_status='approved' WHERE id=?", (result_id,))
+    return {"id": result_id, "review_status": "approved", "validation": value["result"]["validation"]}
+
+
+@app.post("/api/v1/transmute/results/{result_id}/reject")
+async def transmute_reject(result_id: str, request: Request):
+    await transmute_result(result_id, request)
+    with _connection() as connection:
+        connection.execute("UPDATE transmute_results SET review_status='rejected' WHERE id=?", (result_id,))
+    return {"id": result_id, "review_status": "rejected"}
+
+
+@app.get("/api/v1/transmute/history")
+async def transmute_history(request: Request, project_id: str | None = None):
+    with _connection() as connection:
+        if project_id:
+            actor = current_user(connection, request.cookies.get("polyglot_session"))
+            _authorized_project(connection, project_id, actor)
+            rows = connection.execute("SELECT id,project_id,source_path,source_language,target_language,review_status,created_at FROM transmute_results WHERE project_id=? ORDER BY created_at DESC LIMIT 100", (project_id,)).fetchall()
+        else:
+            rows = connection.execute("SELECT id,project_id,source_path,source_language,target_language,review_status,created_at FROM transmute_results ORDER BY created_at DESC LIMIT 100").fetchall()
+    return [dict(row) for row in rows]
 
 
 def _actor(request: Request) -> str:

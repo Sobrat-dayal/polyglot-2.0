@@ -71,7 +71,7 @@ export function useTranslation() {
 
   return {
     sourceCode, setSourceCode, targetCode, sourceLang, setSourceLang,
-    targetLang, setTargetLang, provider, setProvider, mode, setMode,
+    targetLang, setTargetLang, setTargetCode, provider, setProvider, mode, setMode,
     routingStrategy, setRoutingStrategy,
     isLoading, error, result, swapLanguages, handleTranslate,
   };
