@@ -15,6 +15,10 @@ import shutil
 import time
 import uuid
 import zipfile
+try:
+    import yaml
+except ImportError:
+    yaml = None
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -23,7 +27,7 @@ from pathlib import Path, PurePosixPath
 
 from fastapi import FastAPI, HTTPException, Request, Response, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from engine.translator import (
     SUPPORTED_LANGUAGES,
@@ -49,15 +53,31 @@ from stackforge import (
     TECHNOLOGIES,
     CompatibilityIssue,
     TargetStack,
+    compare_architectures,
     advisor_prompt,
     catalog,
     resolve_plan,
     source_stack,
+    estimate_complexity,
     validate_stack,
 )
 from fastapi.responses import StreamingResponse
 
 DATABASE_PATH = os.getenv("POLYGLOT_DATABASE_PATH", "polyglot.db")
+
+
+def _stackforge_yaml_dump(document: dict[str, Any]) -> str:
+    return yaml.safe_dump(document, sort_keys=False) if yaml else json.dumps(document, indent=2)
+
+
+def _stackforge_yaml_load(content: str) -> dict[str, Any]:
+    try:
+        value = yaml.safe_load(content) if yaml else json.loads(content)
+    except (ValueError, TypeError, json.JSONDecodeError) as error:
+        raise HTTPException(422, "Invalid StackForge YAML configuration.") from error
+    if not isinstance(value, dict):
+        raise HTTPException(422, "StackForge configuration must be an object.")
+    return value
 
 
 class TranslationRequest(BaseModel):
@@ -398,6 +418,20 @@ async def stackforge_catalog(query: str | None = None, category: str | None = No
     return {"items": [item.model_dump() for item in catalog(query, category, ecosystem)], "schema_version": STACK_SCHEMA_VERSION}
 
 
+@app.get("/api/v1/stackforge/technologies/{technology_id}")
+async def stackforge_technology(technology_id: str):
+    values = catalog(query=technology_id)
+    item = next((value for value in values if value.id == technology_id), None)
+    if not item:
+        raise HTTPException(404, "Technology not found.")
+    return item.model_dump()
+
+
+@app.get("/api/v1/stackforge/capabilities")
+async def stackforge_capabilities():
+    return {"items": [recipe.model_dump() for recipe in RECIPES], "note": "Capability status is separate from technology compatibility."}
+
+
 @app.get("/api/v1/stackforge/recipes")
 async def stackforge_recipes(source: str | None = None, target: str | None = None):
     values = [item for item in RECIPES if (not source or item.source == source) and (not target or item.target == target)]
@@ -432,7 +466,7 @@ async def stackforge_create_configuration(project_id: str, target: TargetStack, 
         version_row = connection.execute("SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM stackforge_configurations WHERE project_id=?", (project_id,)).fetchone()
         configuration_id = str(uuid.uuid4())
         connection.execute(
-            "INSERT INTO stackforge_configurations VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO stackforge_configurations VALUES(?,?,?,?,?,?,?,?)",
             (configuration_id, project_id, int(version_row["next_version"]), STACK_SCHEMA_VERSION,
              analysis.get("analysis_id"), json.dumps(target.model_dump()),
              json.dumps([issue.model_dump() for issue in issues]), datetime.now(timezone.utc).isoformat()),
@@ -463,11 +497,26 @@ async def stackforge_get_configuration(configuration_id: str, request: Request):
 @app.get("/api/v1/stackforge/configurations/{configuration_id}/export")
 async def stackforge_export_configuration(configuration_id: str, request: Request):
     value = await stackforge_get_configuration(configuration_id, request)
-    return {"format": "polyglot-stackforge", "schema_version": STACK_SCHEMA_VERSION, "configuration": value["config"]}
+    document = {"version": 1, "project": {"name": value["config"]["name"]}, "migration": {"preserve_behavior": value["config"]["requirements"]["preserve_behavior"]}, "target": value["config"]}
+    content = _stackforge_yaml_dump(document)
+    return {"format": "polyglot.yaml", "schema_version": STACK_SCHEMA_VERSION, "content": content, "configuration": value["config"]}
 
 
 @app.post("/api/v1/projects/{project_id}/stackforge/import")
 async def stackforge_import_configuration(project_id: str, target: TargetStack, request: Request):
+    return await stackforge_create_configuration(project_id, target, request)
+
+
+@app.post("/api/v1/stackforge/config/import")
+async def stackforge_import_yaml(project_id: str, payload: dict[str, str], request: Request):
+    content = payload.get("content", "")
+    if len(content) > 200_000:
+        raise HTTPException(413, "Configuration file is too large.")
+    try:
+        document = _stackforge_yaml_load(content)
+        target = TargetStack.model_validate(document.get("target", document))
+    except (AttributeError, TypeError, ValueError, ValidationError) as error:
+        raise HTTPException(422, "Invalid StackForge YAML configuration.") from error
     return await stackforge_create_configuration(project_id, target, request)
 
 
@@ -480,13 +529,17 @@ async def stackforge_compare_configurations(project_id: str, request: Request):
             "SELECT id,version,config_json,compatibility_json,created_at FROM stackforge_configurations WHERE project_id=? ORDER BY version DESC",
             (project_id,),
         ).fetchall()
-    return {"items": [{
+    items = [{
         "id": row["id"], "version": row["version"], "created_at": row["created_at"],
         "architecture": json.loads(row["config_json"]).get("architecture"),
         "service_count": len(json.loads(row["config_json"]).get("services", [])),
         "database_count": len(json.loads(row["config_json"]).get("databases", [])),
         "compatibility_state": "incompatible" if any(item["state"] == "incompatible" for item in json.loads(row["compatibility_json"])) else "review",
-    } for row in rows]}
+    } for row in rows]
+    comparison = None
+    if len(rows) >= 2:
+        comparison = compare_architectures(json.loads(rows[1]["config_json"]), json.loads(rows[0]["config_json"]))
+    return {"items": items, "latest_comparison": comparison}
 
 
 @app.post("/api/v1/stackforge/configurations/{configuration_id}/plan")
@@ -499,10 +552,44 @@ async def stackforge_create_plan(configuration_id: str, request: Request):
         _authorized_project(connection, row["project_id"], actor)
         target = TargetStack.model_validate(json.loads(row["config_json"]))
         analysis = _latest_analysis(connection, row["project_id"], target.source_analysis_id)
+        latest_analysis = connection.execute("SELECT id FROM analyses WHERE project_id=? ORDER BY created_at DESC LIMIT 1", (row["project_id"],)).fetchone()
+        stale = bool(latest_analysis and latest_analysis["id"] != target.source_analysis_id)
         plan = resolve_plan(source_stack(analysis), target, [CompatibilityIssue.model_validate(item) for item in json.loads(row["compatibility_json"])])
+        plan["stale_source"] = stale
+        if stale:
+            plan["execution_readiness"] = "blocked"
+            plan["unsupported"].append("Source analysis is stale; re-run DeepScan before execution.")
         plan_id = str(uuid.uuid4())
         connection.execute("INSERT INTO stackforge_plans VALUES(?,?,?,?)", (plan_id, configuration_id, json.dumps(plan), datetime.now(timezone.utc).isoformat()))
     return {"id": plan_id, **plan}
+
+
+@app.post("/api/v1/stackforge/plans/{plan_id}/decisions")
+async def stackforge_decision(plan_id: str, payload: dict[str, str], request: Request):
+    with _connection() as connection:
+        plan = connection.execute("SELECT p.configuration_id, c.project_id FROM stackforge_plans p JOIN stackforge_configurations c ON c.id=p.configuration_id WHERE p.id=?", (plan_id,)).fetchone()
+        if not plan:
+            raise HTTPException(404, "StackForge plan not found.")
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, plan["project_id"], actor)
+        decision_id = str(uuid.uuid4())
+        status_value = payload.get("status", "pending")
+        if status_value not in {"approved", "rejected", "pending"}:
+            raise HTTPException(422, "Invalid decision status.")
+        connection.execute("INSERT INTO stackforge_decisions VALUES(?,?,?,?,?,?,?,?)", (decision_id, plan["configuration_id"], payload.get("category", "architecture"), payload.get("proposal", ""), status_value, payload.get("reason", ""), actor, datetime.now(timezone.utc).isoformat()))
+    return {"id": decision_id, "status": status_value}
+
+
+@app.get("/api/v1/stackforge/plans/{plan_id}/decisions")
+async def stackforge_decisions(plan_id: str, request: Request):
+    with _connection() as connection:
+        plan = connection.execute("SELECT p.configuration_id, c.project_id FROM stackforge_plans p JOIN stackforge_configurations c ON c.id=p.configuration_id WHERE p.id=?", (plan_id,)).fetchone()
+        if not plan:
+            raise HTTPException(404, "StackForge plan not found.")
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, plan["project_id"], actor)
+        rows = connection.execute("SELECT id,category,proposal,status,reason,approver_id,created_at FROM stackforge_decisions WHERE configuration_id=? ORDER BY created_at", (plan["configuration_id"],)).fetchall()
+    return [dict(row) for row in rows]
 
 
 @app.get("/api/v1/stackforge/plans/{plan_id}")

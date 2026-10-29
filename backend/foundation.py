@@ -107,6 +107,14 @@ def initialize_foundation(connection: sqlite3.Connection) -> None:
           created_at TEXT NOT NULL,
           FOREIGN KEY(configuration_id) REFERENCES stackforge_configurations(id)
         );
+        CREATE TABLE IF NOT EXISTS stackforge_decisions (
+          id TEXT PRIMARY KEY, configuration_id TEXT NOT NULL, category TEXT NOT NULL,
+          proposal TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+          approver_id TEXT NOT NULL, created_at TEXT NOT NULL,
+          FOREIGN KEY(configuration_id) REFERENCES stackforge_configurations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_stackforge_decisions_configuration
+          ON stackforge_decisions(configuration_id, created_at);
         """
     )
     DATA_ROOT.mkdir(parents=True, exist_ok=True)

@@ -22,6 +22,11 @@ experimental, planned, or unsupported recipe.
   workspace authorization inherited from Foundation.
 - Portable configuration export/import, configuration comparison, presets,
   recipe search, and plan previews.
+- Safe `polyglot.yaml`-compatible import/export. JSON is emitted as a valid
+  YAML 1.2 subset when the optional YAML package is unavailable, avoiding a
+  runtime dependency on native YAML extensions.
+- Deterministic feasibility and relative complexity reports, stale source
+  analysis detection, and persisted human decision records for plan approvals.
 - AI Architecture Advisor endpoint using the existing Neural Core
   `documentation` agent. If no provider is available, the API reports that
   condition and still returns deterministic findings rather than fabricating
@@ -32,6 +37,8 @@ experimental, planned, or unsupported recipe.
 ## API
 
 - `GET /api/v1/stackforge/catalog`
+- `GET /api/v1/stackforge/technologies/{id}`
+- `GET /api/v1/stackforge/capabilities`
 - `GET /api/v1/stackforge/recipes`
 - `GET /api/v1/stackforge/presets`
 - `GET /api/v1/projects/{project_id}/stackforge/source`
@@ -42,8 +49,11 @@ experimental, planned, or unsupported recipe.
 - `GET /api/v1/projects/{project_id}/stackforge/compare`
 - `GET /api/v1/stackforge/configurations/{id}`
 - `GET /api/v1/stackforge/configurations/{id}/export`
+- `POST /api/v1/stackforge/config/import`
 - `POST /api/v1/stackforge/configurations/{id}/plan`
 - `GET /api/v1/stackforge/plans/{id}`
+- `POST /api/v1/stackforge/plans/{id}/decisions`
+- `GET /api/v1/stackforge/plans/{id}/decisions`
 - `POST /api/v1/projects/{project_id}/stackforge/advisor`
 
 ## Boundaries
@@ -54,3 +64,8 @@ equivalence. Those operations remain later-stage work. Credentials are not
 accepted in target configuration models; deployment settings are declarative.
 Compatibility is deterministic and auditable, while AI output is advisory and
 cannot override incompatibility findings.
+
+Plans are intentionally blocked when their source analysis is stale, when
+compatibility contains blocking conflicts, or when non-verified recipes and
+security-sensitive decisions require human approval. Complexity is a relative
+work-unit signal, not a time or monetary forecast.

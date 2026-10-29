@@ -85,6 +85,7 @@ class TargetStack(BaseModel):
     frontends: list[Frontend] = Field(default_factory=list)
     services: list[Service] = Field(default_factory=list)
     databases: list[Database] = Field(default_factory=list)
+    authentication: dict[str, Any] = Field(default_factory=dict)
     infrastructure: dict[str, Any] = Field(default_factory=dict)
     requirements: Requirements = Field(default_factory=Requirements)
     extensions: dict[str, Any] = Field(default_factory=dict)
@@ -228,11 +229,44 @@ def resolve_plan(source: dict[str, Any], target: TargetStack, issues: list[Compa
     recipes = [recipe for recipe in RECIPES if recipe.source in source_ids and recipe.target in target_ids]
     if any(api.get("method") for api in source.get("apis", [])) and any(service.api_protocol == "graphql" for service in target.services):
         recipes.append(next(recipe for recipe in RECIPES if recipe.id == "rest-to-graphql"))
-    steps = [{"id": "inventory", "title": "Freeze and verify source analysis snapshot", "depends_on": [], "status": "ready", "risk": "low"}]
+    steps = [{"id": "inventory", "title": "Freeze and verify source analysis snapshot", "depends_on": [], "status": "ready", "risk": "low", "requires_approval": False}]
+    if target.authentication:
+        steps.append({"id": "authentication", "title": "Review authentication and authorization mapping", "depends_on": ["inventory"], "status": "blocked", "risk": "high", "requires_approval": True})
     for recipe in recipes:
-        steps.append({"id": recipe.id, "title": recipe.name, "depends_on": ["inventory"], "status": "planned", "risk": "high" if recipe.risk_categories else "medium", "recipe_status": recipe.status, "limitations": recipe.limitations})
-    steps.append({"id": "validation", "title": "Define differential, contract, security, and acceptance tests", "depends_on": [step["id"] for step in steps[1:]], "status": "planned", "risk": "medium"})
-    return {"schema_version": "migration-plan-1.0", "source_analysis_id": target.source_analysis_id, "target_schema_version": target.schema_version, "steps": steps, "recipe_ids": [recipe.id for recipe in recipes], "unsupported": [issue.explanation for issue in issues if issue.state == "incompatible"], "complexity": {"score": min(100, 20 + len(steps) * 10 + len(source.get("findings", [])) * 3), "level": "high" if len(steps) > 4 else "moderate", "basis": "deterministic step and finding counts"}}
+        steps.append({"id": recipe.id, "title": recipe.name, "depends_on": ["inventory"], "status": "blocked" if recipe.status in {"planned", "unsupported"} else "planned", "risk": "high" if recipe.risk_categories else "medium", "recipe_status": recipe.status, "limitations": recipe.limitations, "requires_approval": recipe.status != "verified"})
+    steps.append({"id": "validation", "title": "Define differential, contract, security, and acceptance tests", "depends_on": [step["id"] for step in steps[1:]], "status": "planned", "risk": "medium", "requires_approval": False})
+    approvals = [{"step_id": step["id"], "reason": "Non-verified recipe or security-sensitive architecture decision"} for step in steps if step.get("requires_approval")]
+    return {"schema_version": "migration-plan-1.0", "source_analysis_id": target.source_analysis_id, "target_schema_version": target.schema_version, "steps": steps, "recipe_ids": [recipe.id for recipe in recipes], "unsupported": [issue.explanation for issue in issues if issue.state == "incompatible"], "required_approvals": approvals, "execution_readiness": "blocked" if approvals or any(issue.state == "incompatible" for issue in issues) else "review", "complexity": estimate_complexity(source, target, issues)}
+
+
+def estimate_complexity(source: dict[str, Any], target: TargetStack, issues: list[CompatibilityIssue]) -> dict[str, Any]:
+    drivers = []
+    score = len(source.get("languages", [])) * 3 + len(source.get("dependencies", [])) + len(source.get("apis", [])) * 2 + len(target.services) * 5 + len(target.databases) * 4
+    if source.get("findings"):
+        score += len(source["findings"]) * 3
+        drivers.append("static-analysis findings")
+    if len(target.services) > 1:
+        drivers.append("multiple target services")
+    if any(issue.state == "incompatible" for issue in issues):
+        score += 25
+        drivers.append("blocking compatibility conflicts")
+    score = min(100, max(0, score))
+    return {"score": score, "level": "high" if score >= 60 else ("moderate" if score >= 25 else "low"), "drivers": drivers, "work_units": max(1, score // 5), "uncertainty": "relative only; human effort and provider cost are not estimated"}
+
+
+def compare_architectures(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    def values(value: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "architecture": value.get("architecture"),
+            "languages": sorted(service.get("language") for service in value.get("services", [])),
+            "frameworks": sorted(service.get("framework") for service in value.get("services", [])),
+            "databases": sorted(database.get("engine") for database in value.get("databases", [])),
+            "api_protocols": sorted(service.get("api_protocol") for service in value.get("services", []) if service.get("api_protocol")),
+        }
+    source, target = values(left), values(right)
+    unchanged = [key for key in source if source[key] == target[key]]
+    changed = [{"component": key, "from": source[key], "to": target[key]} for key in source if source[key] != target[key]]
+    return {"unchanged": unchanged, "changed": changed, "human_decisions": [item["component"] for item in changed], "source": source, "target": target}
 
 
 def advisor_prompt(source: dict[str, Any], target: TargetStack, issues: list[CompatibilityIssue]) -> str:
