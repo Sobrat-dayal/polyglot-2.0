@@ -122,6 +122,18 @@ def initialize_foundation(connection: sqlite3.Connection) -> None:
           created_at TEXT NOT NULL, FOREIGN KEY(project_id) REFERENCES projects(id)
         );
         CREATE INDEX IF NOT EXISTS idx_transmute_project ON transmute_results(project_id, created_at);
+        CREATE TABLE IF NOT EXISTS migrations (
+          id TEXT PRIMARY KEY, project_id TEXT NOT NULL, configuration_id TEXT NOT NULL,
+          plan_id TEXT, request_json TEXT NOT NULL, status TEXT NOT NULL, tasks_json TEXT NOT NULL,
+          result_json TEXT, output_path TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+        CREATE TABLE IF NOT EXISTS migration_events (
+          id TEXT PRIMARY KEY, migration_id TEXT NOT NULL, event_type TEXT NOT NULL,
+          detail TEXT NOT NULL, created_at TEXT NOT NULL,
+          FOREIGN KEY(migration_id) REFERENCES migrations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_migrations_project ON migrations(project_id, created_at);
         """
     )
     DATA_ROOT.mkdir(parents=True, exist_ok=True)

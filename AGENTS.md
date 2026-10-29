@@ -30,3 +30,6 @@
   hashes and validation evidence, reject unsupported pairs explicitly, and
   never execute generated or imported repository code without an approved
   isolated execution boundary.
+- Metamorphosis may only transform authorized immutable snapshots, must persist
+  task/event/checkpoint and provenance metadata, and must never mark failed or
+  unsupported operations as complete.

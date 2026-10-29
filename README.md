@@ -115,6 +115,14 @@ JavaScript/TypeScript and Python/JavaScript constructs, authorized file/module
 translation, diffs, validation evidence, and review actions. See
 [docs/STAGE6_IMPLEMENTATION.md](docs/STAGE6_IMPLEMENTATION.md) for the
 supported matrix and explicit limitations.
+
+## Metamorphosis
+
+Stage 7 adds checkpointed project migration sessions using the latest
+StackForge configuration and Stage 6 transformations. Selected authorized
+snapshot files can be transformed into a generated target directory, tracked
+with task/event/provenance metadata, reviewed, and exported as a ZIP. See
+[docs/STAGE7_IMPLEMENTATION.md](docs/STAGE7_IMPLEMENTATION.md).
 ## DeepScan
 
 Stage 4 adds a read-only static analysis baseline for authorized project

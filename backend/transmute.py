@@ -94,7 +94,7 @@ def _javascript_to_typescript(source: str, mode: str) -> tuple[str, list[dict[st
     if re.search(r"\b(eval|Function)\s*\(", source):
         warnings.append("Dynamic JavaScript execution prevents reliable static typing.")
     if re.search(r"\bmodule\.exports\b", source):
-        output = output.replace("module.exports", "export default")
+        output = re.sub(r"\bmodule\.exports\s*=\s*", "export default ", output)
         mappings.append(_mapping("module.exports", "export default", "CommonJS export rewrite"))
     return output, mappings, warnings
 

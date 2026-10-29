@@ -65,6 +65,7 @@ from stackforge import (
 from transmute import LANGUAGES as TRANSMUTE_LANGUAGES
 from transmute import TransformRequest, capabilities as transmute_capabilities, transform as transmute_transform, unified_diff
 from transmute import validate_output as transmute_validate_output
+from metamorphosis import MigrationRequest, archive_output, build_tasks, execute as execute_migration, ready_tasks
 from fastapi.responses import StreamingResponse
 
 DATABASE_PATH = os.getenv("POLYGLOT_DATABASE_PATH", "polyglot.db")
@@ -771,6 +772,95 @@ async def transmute_history(request: Request, project_id: str | None = None):
         else:
             rows = connection.execute("SELECT id,project_id,source_path,source_language,target_language,review_status,created_at FROM transmute_results ORDER BY created_at DESC LIMIT 100").fetchall()
     return [dict(row) for row in rows]
+
+
+@app.post("/api/v1/projects/{project_id}/metamorphosis")
+async def create_migration(project_id: str, payload: MigrationRequest, request: Request):
+    if payload.project_id != project_id:
+        raise HTTPException(422, "Project ID does not match migration request.")
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        project = _authorized_project(connection, project_id, actor)
+        configuration = connection.execute("SELECT id,project_id,source_analysis_id FROM stackforge_configurations WHERE id=? AND project_id=?", (payload.configuration_id, project_id)).fetchone()
+        if not configuration:
+            raise HTTPException(404, "StackForge configuration not found.")
+        if payload.plan_id:
+            plan = connection.execute("SELECT p.id,c.project_id FROM stackforge_plans p JOIN stackforge_configurations c ON c.id=p.configuration_id WHERE p.id=? AND c.project_id=?", (payload.plan_id, project_id)).fetchone()
+            if not plan:
+                raise HTTPException(404, "Migration plan not found.")
+        paths = payload.selected_paths
+        if not paths:
+            rows = connection.execute("SELECT relative_path FROM project_files WHERE project_id=? AND binary=0 ORDER BY relative_path LIMIT 100", (project_id,)).fetchall()
+            paths = [row["relative_path"] for row in rows]
+        migration_id = str(uuid.uuid4())
+        tasks = build_tasks(paths, payload.mode)
+        now = datetime.now(timezone.utc).isoformat()
+        connection.execute("INSERT INTO migrations VALUES(?,?,?,?,?,?,?,?,?,?,?)", (migration_id, project_id, payload.configuration_id, payload.plan_id, json.dumps(payload.model_dump()), "queued", json.dumps(tasks), None, None, now, now))
+        connection.execute("INSERT INTO migration_events VALUES(?,?,?,?,?)", (str(uuid.uuid4()), migration_id, "queued", json.dumps({"paths": len(paths), "actor": actor}), now))
+    return {"id": migration_id, "status": "queued", "task_count": len(tasks), "project_id": project_id}
+
+
+def _migration_row(migration_id: str, request: Request) -> dict[str, Any]:
+    with _connection() as connection:
+        row = connection.execute("SELECT * FROM migrations WHERE id=?", (migration_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Migration not found.")
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, row["project_id"], actor)
+    return dict(row)
+
+
+@app.post("/api/v1/metamorphosis/{migration_id}/execute")
+async def execute_migration_endpoint(migration_id: str, request: Request):
+    row = _migration_row(migration_id, request)
+    if row["status"] in {"completed", "cancelled"}:
+        raise HTTPException(409, "Migration is not executable in its current state.")
+    payload = MigrationRequest.model_validate(json.loads(row["request_json"]))
+    with _connection() as connection:
+        project = connection.execute("SELECT snapshot_path FROM projects WHERE id=?", (payload.project_id,)).fetchone()
+    output_root = Path(os.getenv("POLYGLOT_DATA_ROOT", "polyglot-data")) / "migrations" / migration_id
+    result = await asyncio.to_thread(execute_migration, payload, Path(project["snapshot_path"]), json.loads(row["tasks_json"]), output_root)
+    now = datetime.now(timezone.utc).isoformat()
+    with _connection() as connection:
+        connection.execute("UPDATE migrations SET status=?,tasks_json=?,result_json=?,output_path=?,updated_at=? WHERE id=?", (result.status, json.dumps(result.tasks), json.dumps(result.__dict__, default=lambda value: value.__dict__), str(output_root), now, migration_id))
+        connection.execute("INSERT INTO migration_events VALUES(?,?,?,?,?)", (str(uuid.uuid4()), migration_id, result.status, json.dumps(result.metrics), now))
+    return {"id": migration_id, "status": result.status, "tasks": result.tasks, "generated": result.generated, "warnings": result.warnings, "metrics": result.metrics}
+
+
+@app.get("/api/v1/metamorphosis/{migration_id}")
+async def migration_status(migration_id: str, request: Request):
+    row = _migration_row(migration_id, request)
+    return {**row, "request": json.loads(row["request_json"]), "tasks": json.loads(row["tasks_json"]), "result": json.loads(row["result_json"]) if row["result_json"] else None}
+
+
+@app.post("/api/v1/metamorphosis/{migration_id}/cancel")
+async def cancel_migration(migration_id: str, request: Request):
+    row = _migration_row(migration_id, request)
+    if row["status"] in {"completed", "failed", "cancelled"}:
+        raise HTTPException(409, "Migration is no longer active.")
+    now = datetime.now(timezone.utc).isoformat()
+    with _connection() as connection:
+        connection.execute("UPDATE migrations SET status='cancelled',updated_at=? WHERE id=?", (now, migration_id))
+        connection.execute("INSERT INTO migration_events VALUES(?,?,?,?,?)", (str(uuid.uuid4()), migration_id, "cancelled", "Cancellation requested by user.", now))
+    return {"id": migration_id, "status": "cancelled"}
+
+
+@app.get("/api/v1/metamorphosis/{migration_id}/events")
+async def migration_events(migration_id: str, request: Request):
+    _migration_row(migration_id, request)
+    with _connection() as connection:
+        rows = connection.execute("SELECT event_type,detail,created_at FROM migration_events WHERE migration_id=? ORDER BY created_at", (migration_id,)).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/api/v1/metamorphosis/{migration_id}/export")
+async def export_migration(migration_id: str, request: Request):
+    row = _migration_row(migration_id, request)
+    if not row["output_path"] or not Path(row["output_path"]).is_dir():
+        raise HTTPException(409, "Migration output is not available.")
+    archive_path = Path(row["output_path"]).with_suffix(".zip")
+    archive_output(Path(row["output_path"]), archive_path)
+    return FileResponse(archive_path, filename=f"migration-{migration_id}.zip", media_type="application/zip")
 
 
 def _actor(request: Request) -> str:
