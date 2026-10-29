@@ -87,6 +87,13 @@ def initialize_foundation(connection: sqlite3.Connection) -> None:
           created_at TEXT NOT NULL, error TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_ai_requests_workspace ON ai_requests(workspace_id, created_at);
+        CREATE TABLE IF NOT EXISTS analyses (
+          id TEXT PRIMARY KEY, project_id TEXT NOT NULL, status TEXT NOT NULL,
+          analysis_version TEXT NOT NULL, files_analyzed INTEGER NOT NULL DEFAULT 0,
+          result_json TEXT NOT NULL, created_at TEXT NOT NULL,
+          FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_analyses_project ON analyses(project_id, created_at);
         """
     )
     DATA_ROOT.mkdir(parents=True, exist_ok=True)

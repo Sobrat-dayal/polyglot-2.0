@@ -42,6 +42,7 @@ from fastapi.responses import FileResponse
 import httpx
 from auth import create_session, current_user, password_hash, verify_password, read_session
 from neural_core import AIError, AIRequest, AGENTS, NeuralGateway, run_agent
+from deepscan import ANALYSIS_VERSION, analyze_snapshot, markdown_report
 from fastapi.responses import StreamingResponse
 
 DATABASE_PATH = os.getenv("POLYGLOT_DATABASE_PATH", "polyglot.db")
@@ -272,6 +273,102 @@ async def ai_usage(request: Request, limit: int = 100):
                WHERE m.user_id=? ORDER BY r.created_at DESC LIMIT ?""", (actor, min(max(limit, 1), 100))
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _authorized_project(connection: sqlite3.Connection, project_id: str, actor: str) -> sqlite3.Row:
+    project = connection.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+    allowed = connection.execute(
+        "SELECT 1 FROM workspace_members WHERE workspace_id=? AND user_id=?",
+        (project["workspace_id"], actor),
+    ).fetchone() if project else None
+    if not project or not allowed:
+        raise HTTPException(404, "Project not found.")
+    return project
+
+
+@app.post("/api/v1/projects/{project_id}/analysis")
+async def start_analysis(project_id: str, request: Request):
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        project = _authorized_project(connection, project_id, actor)
+    result = await asyncio.to_thread(analyze_snapshot, project_id, Path(project["snapshot_path"]))
+    payload = {
+        "analysis_id": result.analysis_id, "project_id": result.project_id,
+        "status": result.status, "files_analyzed": result.files_analyzed,
+        "symbols": len(result.symbols), "dependencies": len(result.dependencies),
+        "apis": len(result.apis), "diagnostics": len(result.diagnostics),
+    }
+    with _connection() as connection:
+        connection.execute(
+            "INSERT INTO analyses VALUES(?,?,?,?,?,?,?)",
+            (result.analysis_id, project_id, result.status, ANALYSIS_VERSION,
+             result.files_analyzed, json.dumps(result.__dict__, default=lambda value: value.__dict__),
+             datetime.now(timezone.utc).isoformat()),
+        )
+    return payload
+
+
+def _analysis(analysis_id: str, request: Request | None = None) -> dict[str, Any]:
+    with _connection() as connection:
+        row = connection.execute("SELECT * FROM analyses WHERE id=?", (analysis_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Analysis not found.")
+    if request is not None:
+        with _connection() as connection:
+            actor = current_user(connection, request.cookies.get("polyglot_session"))
+            _authorized_project(connection, row["project_id"], actor)
+    return dict(row)
+
+
+@app.get("/api/v1/projects/{project_id}/analysis")
+async def list_analysis(project_id: str, request: Request):
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, project_id, actor)
+        rows = connection.execute("SELECT id,status,analysis_version,files_analyzed,created_at FROM analyses WHERE project_id=? ORDER BY created_at DESC", (project_id,)).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/api/v1/analysis/{analysis_id}/{section}")
+async def analysis_section(analysis_id: str, section: str, request: Request):
+    row = _analysis(analysis_id, request)
+    result = json.loads(row["result_json"])
+    sections = {
+        "languages": result["languages"], "stack": result["stack"],
+        "symbols": result["symbols"], "dependencies": result["dependencies"],
+        "architecture": result["architecture"], "apis": result["apis"],
+        "findings": result["findings"], "diagnostics": result["diagnostics"],
+        "ir": result["ir"],
+    }
+    if section == "report":
+        return {"markdown": markdown_report(type("Result", (), result)())}
+    if section not in sections:
+        raise HTTPException(404, "Unknown analysis section.")
+    return {"analysis_id": analysis_id, "section": section, "items": sections[section]}
+
+
+@app.post("/api/v1/projects/{project_id}/code-search")
+async def code_search(project_id: str, payload: dict[str, str], request: Request):
+    query = payload.get("query", "").strip()
+    if not query or len(query) > 200:
+        raise HTTPException(422, "A bounded search query is required.")
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        project = _authorized_project(connection, project_id, actor)
+        files = connection.execute("SELECT relative_path FROM project_files WHERE project_id=? AND binary=0 LIMIT 2000", (project_id,)).fetchall()
+    root = Path(project["snapshot_path"]).resolve()
+    matches = []
+    for row in files:
+        target = (root / Path(*PurePosixPath(row["relative_path"]).parts)).resolve()
+        if root not in target.parents:
+            continue
+        content = target.read_text(encoding="utf-8", errors="replace")
+        for line_number, line in enumerate(content.splitlines(), 1):
+            if query.casefold() in line.casefold():
+                matches.append({"path": row["relative_path"], "line": line_number, "text": line[:500]})
+                if len(matches) >= 500:
+                    return {"query": query, "matches": matches, "truncated": True}
+    return {"query": query, "matches": matches, "truncated": False}
 
 
 def _actor(request: Request) -> str:

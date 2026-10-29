@@ -23,6 +23,8 @@ export default function PolyglotPage() {
   const [fileSearch, setFileSearch] = useState('');
   const [account, setAccount] = useState<string | null>(null);
   const [aiModels, setAiModels] = useState<Array<{ provider: string; model: string; status: string }>>([]);
+  const [analysis, setAnalysis] = useState<{ analysis_id: string; symbols: number; dependencies: number; apis: number } | null>(null);
+  const [searchResults, setSearchResults] = useState<Array<{ path: string; line: number; text: string }>>([]);
   const apiUrl = process.env.NEXT_PUBLIC_POLYGLOT_API_URL ?? 'http://127.0.0.1:8000';
   const loadProjects = async () => {
     const response = await fetch(`${apiUrl}/api/v1/projects`);
@@ -79,6 +81,20 @@ export default function PolyglotPage() {
     if (response.ok) setAccount(email);
   };
   const visibleFiles = files.filter((file) => file.relative_path.toLowerCase().includes(fileSearch.toLowerCase()));
+  const runDeepScan = async () => {
+    if (!selectedProject) return;
+    const response = await fetch(`${apiUrl}/api/v1/projects/${selectedProject}/analysis`, { method: 'POST' });
+    if (response.ok) setAnalysis(await response.json());
+  };
+  const searchCode = async () => {
+    if (!selectedProject) return;
+    const query = window.prompt('Search project source');
+    if (!query?.trim()) return;
+    const response = await fetch(`${apiUrl}/api/v1/projects/${selectedProject}/code-search`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }),
+    });
+    if (response.ok) setSearchResults((await response.json()).matches);
+  };
   useEffect(() => {
     fetch(`${apiUrl}/api/v1/ai/models`).then((response) => response.ok ? response.json() : []).then(setAiModels).catch(() => setAiModels([]));
   }, [apiUrl]);
@@ -109,7 +125,7 @@ export default function PolyglotPage() {
           <label className="import-button">Import ZIP<input type="file" accept=".zip,application/zip" onChange={importZip} /></label>
           <button className="import-button" onClick={importGitHub}>Import GitHub</button>
           {projects.map((project) => <button className={`project-item ${selectedProject === project.id ? 'active' : ''}`} key={project.id} onClick={() => openProject(project.id)}><strong>{project.name}</strong><small>{project.file_count} files · {project.source_type}</small></button>)}
-          {selectedProject && <div className="file-browser"><div className="sidebar-heading"><span>Source snapshot</span></div><div className="file-search"><Search size={14} /><input placeholder="Filter files" value={fileSearch} onChange={(event) => setFileSearch(event.target.value)} /></div>{visibleFiles.map((file) => <button className="file-item" key={file.relative_path} onClick={async () => { const response = await fetch(`${apiUrl}/api/v1/projects/${selectedProject}/files/${file.relative_path}`); if (response.ok) translation.setSourceCode((await response.json()).content); }}><code>{file.relative_path}</code><small>{file.size_bytes} bytes</small></button>)}</div>}
+          {selectedProject && <div className="file-browser"><div className="sidebar-heading"><span>Source snapshot</span></div><button className="import-button" onClick={runDeepScan}>Run DeepScan</button><button className="import-button" onClick={searchCode}>Search source</button>{analysis && <div className="analysis-summary"><strong>Analysis complete</strong><small>{analysis.symbols} symbols · {analysis.dependencies} dependencies · {analysis.apis} APIs</small></div>}<div className="file-search"><Search size={14} /><input placeholder="Filter files" value={fileSearch} onChange={(event) => setFileSearch(event.target.value)} /></div>{visibleFiles.map((file) => <button className="file-item" key={file.relative_path} onClick={async () => { const response = await fetch(`${apiUrl}/api/v1/projects/${selectedProject}/files/${file.relative_path}`); if (response.ok) translation.setSourceCode((await response.json()).content); }}><code>{file.relative_path}</code><small>{file.size_bytes} bytes</small></button>)}{searchResults.map((match) => <button className="file-item" key={`${match.path}:${match.line}`} onClick={() => setFileSearch(match.path)}><code>{match.path}:{match.line}</code><small>{match.text}</small></button>)}</div>}
         </aside>
         <div className="translator-pane">
         <div className="toolbar">

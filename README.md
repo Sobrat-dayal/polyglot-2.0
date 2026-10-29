@@ -95,5 +95,15 @@ The current deployment uses SQLite, local artifact storage, and an in-process
 cooperative job runner. PostgreSQL/Alembic, Redis/Celery workers, SSE/WebSocket
 progress, S3 storage, and private GitHub OAuth/App installation are not part of
 the local implementation yet. Password authentication and workspace membership
-authorization are implemented for the local API. Stage 3 AI orchestration has
-not been started.
+authorization are implemented for the local API. Stage 3 AI orchestration and
+the Stage 4 DeepScan baseline are implemented locally; provider availability
+still depends on configured credentials or an Ollama server.
+## DeepScan
+
+Stage 4 adds a read-only static analysis baseline for authorized project
+snapshots. Run it from the project sidebar or use
+`POST /api/v1/projects/{project_id}/analysis`; results expose versioned Project
+IR sections, symbols, dependencies, APIs, architecture, findings, diagnostics,
+and a bounded source-search endpoint. See
+[docs/STAGE4_IMPLEMENTATION.md](docs/STAGE4_IMPLEMENTATION.md) for coverage and
+known limitations.
