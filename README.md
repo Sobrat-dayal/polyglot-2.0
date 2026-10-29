@@ -98,6 +98,15 @@ the local implementation yet. Password authentication and workspace membership
 authorization are implemented for the local API. Stage 3 AI orchestration and
 the Stage 4 DeepScan baseline are implemented locally; provider availability
 still depends on configured credentials or an Ollama server.
+
+## StackForge
+
+Stage 5 adds typed target-stack configuration, technology and migration recipe
+catalogs, deterministic compatibility validation, versioned configurations,
+DeepScan source-stack integration, migration plan previews, portability,
+comparison, presets, and an optional Neural Core architecture advisor. See
+[docs/STAGE5_IMPLEMENTATION.md](docs/STAGE5_IMPLEMENTATION.md) for API
+coverage and explicit non-goals.
 ## DeepScan
 
 Stage 4 adds a read-only static analysis baseline for authorized project

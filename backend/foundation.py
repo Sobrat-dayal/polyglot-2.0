@@ -94,6 +94,19 @@ def initialize_foundation(connection: sqlite3.Connection) -> None:
           FOREIGN KEY(project_id) REFERENCES projects(id)
         );
         CREATE INDEX IF NOT EXISTS idx_analyses_project ON analyses(project_id, created_at);
+        CREATE TABLE IF NOT EXISTS stackforge_configurations (
+          id TEXT PRIMARY KEY, project_id TEXT NOT NULL, version INTEGER NOT NULL,
+          schema_version TEXT NOT NULL, source_analysis_id TEXT, config_json TEXT NOT NULL,
+          compatibility_json TEXT NOT NULL, created_at TEXT NOT NULL,
+          FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_stackforge_project_version
+          ON stackforge_configurations(project_id, version);
+        CREATE TABLE IF NOT EXISTS stackforge_plans (
+          id TEXT PRIMARY KEY, configuration_id TEXT NOT NULL, plan_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(configuration_id) REFERENCES stackforge_configurations(id)
+        );
         """
     )
     DATA_ROOT.mkdir(parents=True, exist_ok=True)

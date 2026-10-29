@@ -22,3 +22,7 @@
 - DeepScan is read-only and must never execute, import, install, or evaluate
   project code. Preserve evidence, confidence, source spans, and explicit
   parser diagnostics; do not claim compiler-grade semantic completeness.
+- StackForge must keep technology compatibility separate from migration
+  capability. Target configurations are declarative; recipes are not
+  executable code, and AI recommendations cannot override deterministic
+  incompatibility findings.

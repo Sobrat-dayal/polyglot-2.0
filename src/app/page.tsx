@@ -25,6 +25,8 @@ export default function PolyglotPage() {
   const [aiModels, setAiModels] = useState<Array<{ provider: string; model: string; status: string }>>([]);
   const [analysis, setAnalysis] = useState<{ analysis_id: string; symbols: number; dependencies: number; apis: number } | null>(null);
   const [searchResults, setSearchResults] = useState<Array<{ path: string; line: number; text: string }>>([]);
+  const [stackForge, setStackForge] = useState({ framework: 'fastapi', language: 'python', database: 'postgresql', architecture: 'modular_monolith', api: 'rest' });
+  const [stackForgeResult, setStackForgeResult] = useState<{ state: string; issues: Array<{ severity: string; explanation: string }> } | null>(null);
   const apiUrl = process.env.NEXT_PUBLIC_POLYGLOT_API_URL ?? 'http://127.0.0.1:8000';
   const loadProjects = async () => {
     const response = await fetch(`${apiUrl}/api/v1/projects`);
@@ -95,6 +97,34 @@ export default function PolyglotPage() {
     });
     if (response.ok) setSearchResults((await response.json()).matches);
   };
+  const validateStack = async () => {
+    if (!selectedProject) return;
+    const target = {
+      name: 'StackForge target',
+      source_analysis_id: analysis?.analysis_id,
+      architecture: stackForge.architecture,
+      services: [{ id: 'api', name: 'API', language: stackForge.language, framework: stackForge.framework, api_protocol: stackForge.api, database_ids: ['primary'] }],
+      databases: [{ id: 'primary', engine: stackForge.database }],
+    };
+    const response = await fetch(`${apiUrl}/api/v1/projects/${selectedProject}/stackforge/validate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(target),
+    });
+    if (response.ok) setStackForgeResult(await response.json());
+  };
+  const saveStack = async () => {
+    if (!selectedProject) return;
+    const target = {
+      name: 'StackForge target',
+      source_analysis_id: analysis?.analysis_id,
+      architecture: stackForge.architecture,
+      services: [{ id: 'api', name: 'API', language: stackForge.language, framework: stackForge.framework, api_protocol: stackForge.api, database_ids: ['primary'] }],
+      databases: [{ id: 'primary', engine: stackForge.database }],
+    };
+    const response = await fetch(`${apiUrl}/api/v1/projects/${selectedProject}/stackforge/configurations`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(target),
+    });
+    if (response.ok) setStackForgeResult(await response.json());
+  };
   useEffect(() => {
     fetch(`${apiUrl}/api/v1/ai/models`).then((response) => response.ok ? response.json() : []).then(setAiModels).catch(() => setAiModels([]));
   }, [apiUrl]);
@@ -125,7 +155,7 @@ export default function PolyglotPage() {
           <label className="import-button">Import ZIP<input type="file" accept=".zip,application/zip" onChange={importZip} /></label>
           <button className="import-button" onClick={importGitHub}>Import GitHub</button>
           {projects.map((project) => <button className={`project-item ${selectedProject === project.id ? 'active' : ''}`} key={project.id} onClick={() => openProject(project.id)}><strong>{project.name}</strong><small>{project.file_count} files · {project.source_type}</small></button>)}
-          {selectedProject && <div className="file-browser"><div className="sidebar-heading"><span>Source snapshot</span></div><button className="import-button" onClick={runDeepScan}>Run DeepScan</button><button className="import-button" onClick={searchCode}>Search source</button>{analysis && <div className="analysis-summary"><strong>Analysis complete</strong><small>{analysis.symbols} symbols · {analysis.dependencies} dependencies · {analysis.apis} APIs</small></div>}<div className="file-search"><Search size={14} /><input placeholder="Filter files" value={fileSearch} onChange={(event) => setFileSearch(event.target.value)} /></div>{visibleFiles.map((file) => <button className="file-item" key={file.relative_path} onClick={async () => { const response = await fetch(`${apiUrl}/api/v1/projects/${selectedProject}/files/${file.relative_path}`); if (response.ok) translation.setSourceCode((await response.json()).content); }}><code>{file.relative_path}</code><small>{file.size_bytes} bytes</small></button>)}{searchResults.map((match) => <button className="file-item" key={`${match.path}:${match.line}`} onClick={() => setFileSearch(match.path)}><code>{match.path}:{match.line}</code><small>{match.text}</small></button>)}</div>}
+          {selectedProject && <div className="file-browser"><div className="sidebar-heading"><span>Source snapshot</span></div><button className="import-button" onClick={runDeepScan}>Run DeepScan</button><button className="import-button" onClick={searchCode}>Search source</button>{analysis && <div className="analysis-summary"><strong>Analysis complete</strong><small>{analysis.symbols} symbols · {analysis.dependencies} dependencies · {analysis.apis} APIs</small></div>}<div className="stackforge"><div className="sidebar-heading"><span>StackForge target</span></div><select value={stackForge.language} onChange={(event) => setStackForge({ ...stackForge, language: event.target.value })}><option value="python">Python</option><option value="typescript">TypeScript</option><option value="go">Go</option><option value="java">Java</option></select><select value={stackForge.framework} onChange={(event) => setStackForge({ ...stackForge, framework: event.target.value })}><option value="fastapi">FastAPI</option><option value="express">Express</option><option value="nestjs">NestJS</option><option value="spring-boot">Spring Boot</option></select><select value={stackForge.database} onChange={(event) => setStackForge({ ...stackForge, database: event.target.value })}><option value="postgresql">PostgreSQL</option><option value="mysql">MySQL</option><option value="mongodb">MongoDB</option></select><select value={stackForge.architecture} onChange={(event) => setStackForge({ ...stackForge, architecture: event.target.value })}><option value="modular_monolith">Modular monolith</option><option value="microservices">Microservices</option><option value="event_driven">Event-driven</option></select><button className="import-button" onClick={validateStack}>Validate target</button><button className="import-button" onClick={saveStack}>Save version</button>{stackForgeResult && <div className="analysis-summary"><strong>{stackForgeResult.state}</strong>{stackForgeResult.issues.map((issue) => <small key={issue.explanation}>{issue.severity}: {issue.explanation}</small>)}</div>}</div><div className="file-search"><Search size={14} /><input placeholder="Filter files" value={fileSearch} onChange={(event) => setFileSearch(event.target.value)} /></div>{visibleFiles.map((file) => <button className="file-item" key={file.relative_path} onClick={async () => { const response = await fetch(`${apiUrl}/api/v1/projects/${selectedProject}/files/${file.relative_path}`); if (response.ok) translation.setSourceCode((await response.json()).content); }}><code>{file.relative_path}</code><small>{file.size_bytes} bytes</small></button>)}{searchResults.map((match) => <button className="file-item" key={`${match.path}:${match.line}`} onClick={() => setFileSearch(match.path)}><code>{match.path}:{match.line}</code><small>{match.text}</small></button>)}</div>}
         </aside>
         <div className="translator-pane">
         <div className="toolbar">

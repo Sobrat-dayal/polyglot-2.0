@@ -43,6 +43,18 @@ import httpx
 from auth import create_session, current_user, password_hash, verify_password, read_session
 from neural_core import AIError, AIRequest, AGENTS, NeuralGateway, run_agent
 from deepscan import ANALYSIS_VERSION, analyze_snapshot, markdown_report
+from stackforge import (
+    RECIPES,
+    STACK_SCHEMA_VERSION,
+    TECHNOLOGIES,
+    CompatibilityIssue,
+    TargetStack,
+    advisor_prompt,
+    catalog,
+    resolve_plan,
+    source_stack,
+    validate_stack,
+)
 from fastapi.responses import StreamingResponse
 
 DATABASE_PATH = os.getenv("POLYGLOT_DATABASE_PATH", "polyglot.db")
@@ -369,6 +381,171 @@ async def code_search(project_id: str, payload: dict[str, str], request: Request
                 if len(matches) >= 500:
                     return {"query": query, "matches": matches, "truncated": True}
     return {"query": query, "matches": matches, "truncated": False}
+
+
+def _latest_analysis(connection: sqlite3.Connection, project_id: str, analysis_id: str | None = None) -> dict[str, Any]:
+    row = connection.execute(
+        "SELECT result_json FROM analyses WHERE project_id=? AND (? IS NULL OR id=?) ORDER BY created_at DESC LIMIT 1",
+        (project_id, analysis_id, analysis_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(409, "Run DeepScan for this project before configuring a target stack.")
+    return json.loads(row["result_json"])
+
+
+@app.get("/api/v1/stackforge/catalog")
+async def stackforge_catalog(query: str | None = None, category: str | None = None, ecosystem: str | None = None):
+    return {"items": [item.model_dump() for item in catalog(query, category, ecosystem)], "schema_version": STACK_SCHEMA_VERSION}
+
+
+@app.get("/api/v1/stackforge/recipes")
+async def stackforge_recipes(source: str | None = None, target: str | None = None):
+    values = [item for item in RECIPES if (not source or item.source == source) and (not target or item.target == target)]
+    return {"items": [item.model_dump() for item in values]}
+
+
+@app.get("/api/v1/projects/{project_id}/stackforge/source")
+async def stackforge_source(project_id: str, request: Request, analysis_id: str | None = None):
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, project_id, actor)
+        analysis = _latest_analysis(connection, project_id, analysis_id)
+    return source_stack(analysis)
+
+
+@app.post("/api/v1/projects/{project_id}/stackforge/validate")
+async def stackforge_validate(project_id: str, target: TargetStack, request: Request):
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, project_id, actor)
+    issues = validate_stack(target)
+    return {"schema_version": STACK_SCHEMA_VERSION, "state": "incompatible" if any(issue.state == "incompatible" for issue in issues) else ("conditionally_compatible" if issues else "compatible"), "issues": [issue.model_dump() for issue in issues]}
+
+
+@app.post("/api/v1/projects/{project_id}/stackforge/configurations")
+async def stackforge_create_configuration(project_id: str, target: TargetStack, request: Request):
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, project_id, actor)
+        analysis = _latest_analysis(connection, project_id, target.source_analysis_id)
+        issues = validate_stack(target)
+        version_row = connection.execute("SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM stackforge_configurations WHERE project_id=?", (project_id,)).fetchone()
+        configuration_id = str(uuid.uuid4())
+        connection.execute(
+            "INSERT INTO stackforge_configurations VALUES(?,?,?,?,?,?,?)",
+            (configuration_id, project_id, int(version_row["next_version"]), STACK_SCHEMA_VERSION,
+             analysis.get("analysis_id"), json.dumps(target.model_dump()),
+             json.dumps([issue.model_dump() for issue in issues]), datetime.now(timezone.utc).isoformat()),
+        )
+    return {"id": configuration_id, "project_id": project_id, "version": int(version_row["next_version"]), "config": target.model_dump(), "compatibility": [issue.model_dump() for issue in issues]}
+
+
+@app.get("/api/v1/projects/{project_id}/stackforge/configurations")
+async def stackforge_list_configurations(project_id: str, request: Request):
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, project_id, actor)
+        rows = connection.execute("SELECT id,version,schema_version,source_analysis_id,created_at FROM stackforge_configurations WHERE project_id=? ORDER BY version DESC", (project_id,)).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/api/v1/stackforge/configurations/{configuration_id}")
+async def stackforge_get_configuration(configuration_id: str, request: Request):
+    with _connection() as connection:
+        row = connection.execute("SELECT * FROM stackforge_configurations WHERE id=?", (configuration_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "StackForge configuration not found.")
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, row["project_id"], actor)
+    return {**dict(row), "config": json.loads(row["config_json"]), "compatibility": json.loads(row["compatibility_json"])}
+
+
+@app.get("/api/v1/stackforge/configurations/{configuration_id}/export")
+async def stackforge_export_configuration(configuration_id: str, request: Request):
+    value = await stackforge_get_configuration(configuration_id, request)
+    return {"format": "polyglot-stackforge", "schema_version": STACK_SCHEMA_VERSION, "configuration": value["config"]}
+
+
+@app.post("/api/v1/projects/{project_id}/stackforge/import")
+async def stackforge_import_configuration(project_id: str, target: TargetStack, request: Request):
+    return await stackforge_create_configuration(project_id, target, request)
+
+
+@app.get("/api/v1/projects/{project_id}/stackforge/compare")
+async def stackforge_compare_configurations(project_id: str, request: Request):
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, project_id, actor)
+        rows = connection.execute(
+            "SELECT id,version,config_json,compatibility_json,created_at FROM stackforge_configurations WHERE project_id=? ORDER BY version DESC",
+            (project_id,),
+        ).fetchall()
+    return {"items": [{
+        "id": row["id"], "version": row["version"], "created_at": row["created_at"],
+        "architecture": json.loads(row["config_json"]).get("architecture"),
+        "service_count": len(json.loads(row["config_json"]).get("services", [])),
+        "database_count": len(json.loads(row["config_json"]).get("databases", [])),
+        "compatibility_state": "incompatible" if any(item["state"] == "incompatible" for item in json.loads(row["compatibility_json"])) else "review",
+    } for row in rows]}
+
+
+@app.post("/api/v1/stackforge/configurations/{configuration_id}/plan")
+async def stackforge_create_plan(configuration_id: str, request: Request):
+    with _connection() as connection:
+        row = connection.execute("SELECT * FROM stackforge_configurations WHERE id=?", (configuration_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "StackForge configuration not found.")
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, row["project_id"], actor)
+        target = TargetStack.model_validate(json.loads(row["config_json"]))
+        analysis = _latest_analysis(connection, row["project_id"], target.source_analysis_id)
+        plan = resolve_plan(source_stack(analysis), target, [CompatibilityIssue.model_validate(item) for item in json.loads(row["compatibility_json"])])
+        plan_id = str(uuid.uuid4())
+        connection.execute("INSERT INTO stackforge_plans VALUES(?,?,?,?)", (plan_id, configuration_id, json.dumps(plan), datetime.now(timezone.utc).isoformat()))
+    return {"id": plan_id, **plan}
+
+
+@app.get("/api/v1/stackforge/plans/{plan_id}")
+async def stackforge_get_plan(plan_id: str, request: Request):
+    with _connection() as connection:
+        row = connection.execute(
+            "SELECT p.*, c.project_id FROM stackforge_plans p JOIN stackforge_configurations c ON c.id=p.configuration_id WHERE p.id=?",
+            (plan_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "StackForge plan not found.")
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, row["project_id"], actor)
+    return {"id": plan_id, **json.loads(row["plan_json"])}
+
+
+@app.post("/api/v1/projects/{project_id}/stackforge/advisor")
+async def stackforge_advisor(project_id: str, target: TargetStack, request: Request):
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        project = _authorized_project(connection, project_id, actor)
+        analysis = _latest_analysis(connection, project_id, target.source_analysis_id)
+    source = source_stack(analysis)
+    issues = validate_stack(target)
+    plan = resolve_plan(source, target, issues)
+    try:
+        response = await run_agent(
+            neural_gateway, "documentation", advisor_prompt(source, target, issues), "balanced"
+        )
+        recommendation = response.content
+        ai_metadata = {"provider": response.provider, "model": response.model, "duration_ms": response.duration_ms}
+    except AIError as error:
+        recommendation = "AI advisor unavailable; deterministic compatibility and planning results are shown."
+        ai_metadata = {"status": "unavailable", "message": error.message}
+    return {"project_id": project["id"], "recommendation": recommendation, "ai": ai_metadata, "compatibility": [issue.model_dump() for issue in issues], "plan_preview": plan}
+
+
+@app.get("/api/v1/stackforge/presets")
+async def stackforge_presets():
+    return {"items": [
+        {"id": "polyglot-web", "name": "Polyglot web baseline", "config": TargetStack(name="Polyglot web baseline", frontends=[{"framework": "nextjs", "language": "typescript", "rendering": "hybrid"}], services=[{"id": "api", "name": "API", "language": "python", "framework": "fastapi", "api_protocol": "rest"}], databases=[{"id": "primary", "engine": "postgresql", "orm": "sqlalchemy"}]).model_dump()},
+        {"id": "typed-services", "name": "Typed service baseline", "config": TargetStack(name="Typed service baseline", architecture="modular_monolith", services=[{"id": "api", "name": "API", "language": "typescript", "framework": "nestjs", "api_protocol": "rest"}]).model_dump()},
+    ]}
 
 
 def _actor(request: Request) -> str:
