@@ -130,6 +130,16 @@ Stage 8 adds approval-gated, non-destructive database type mapping, REST API
 contract generation, Compose-shaped Kubernetes manifest generation, secret
 reference scanning, and persisted Reforge operation metadata. See
 [docs/STAGE8_IMPLEMENTATION.md](docs/STAGE8_IMPLEMENTATION.md).
+
+## Guardian
+
+Stage 9 adds persisted, authorization-protected verification requests with
+versioned evidence, deterministic static validation, test discovery, supplied
+observation comparison, and explicit quality-gate limitations. Dynamic source
+or target execution is blocked until a hardened sandbox is configured; the API
+never executes imported or generated code. See
+[docs/STAGE9_IMPLEMENTATION.md](docs/STAGE9_IMPLEMENTATION.md).
+
 ## DeepScan
 
 Stage 4 adds a read-only static analysis baseline for authorized project

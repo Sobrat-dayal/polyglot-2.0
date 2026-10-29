@@ -67,6 +67,7 @@ from transmute import TransformRequest, capabilities as transmute_capabilities, 
 from transmute import validate_output as transmute_validate_output
 from metamorphosis import MigrationRequest, archive_output, build_tasks, execute as execute_migration, ready_tasks
 from reforge import ReforgeRequest, execute as execute_reforge
+from guardian import GuardianRequest, build_report, compare_observations, static_validate
 from fastapi.responses import StreamingResponse
 
 DATABASE_PATH = os.getenv("POLYGLOT_DATABASE_PATH", "polyglot.db")
@@ -1424,3 +1425,93 @@ async def delete_history(translation_id: str) -> None:
 @app.post("/api/translate", response_model=TranslationResponse, include_in_schema=False)
 async def legacy_translate(payload: TranslationRequest, request: Request):
     return await translate(payload, request)
+
+
+@app.post("/api/v1/projects/{project_id}/guardian")
+async def create_guardian_verification(project_id: str, payload: GuardianRequest, request: Request):
+    if payload.project_id != project_id:
+        raise HTTPException(422, "Project ID does not match Guardian request.")
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, project_id, actor)
+        files = [dict(row) for row in connection.execute(
+            "SELECT relative_path, size_bytes, language FROM project_files WHERE project_id=? ORDER BY relative_path",
+            (project_id,),
+        ).fetchall()]
+        observations = []
+        for scenario in payload.scenarios:
+            if "source" not in scenario or "target" not in scenario:
+                observations.append({"check": "scenario", "status": "inconclusive", "reason": "Both source and target observations are required."})
+                continue
+            observations.append({
+                "check": scenario.get("name", "differential scenario"),
+                **compare_observations(scenario["source"], scenario["target"], scenario.get("normalization_rules", [])),
+            })
+        report = build_report(payload, files, observations)
+        verification_id = str(uuid.uuid4())
+        timestamp = datetime.now(timezone.utc).isoformat()
+        status_value = report["status"]
+        connection.execute(
+            "INSERT INTO guardian_verifications VALUES(?,?,?,?,?,?,?,?)",
+            (verification_id, project_id, payload.migration_id, json.dumps(payload.model_dump()), status_value, json.dumps(report), timestamp, timestamp),
+        )
+        connection.execute(
+            "INSERT INTO guardian_evidence VALUES(?,?,?,?,?,?)",
+            (str(uuid.uuid4()), verification_id, "verification_report", json.dumps(report), hashlib.sha256(json.dumps(report, sort_keys=True).encode()).hexdigest(), timestamp),
+        )
+    return {"id": verification_id, "status": status_value, "report": report}
+
+
+@app.get("/api/v1/guardian/verifications/{verification_id}")
+async def get_guardian_verification(verification_id: str, request: Request):
+    with _connection() as connection:
+        row = connection.execute("SELECT * FROM guardian_verifications WHERE id=?", (verification_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Guardian verification not found.")
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, row["project_id"], actor)
+        evidence = [dict(item) for item in connection.execute(
+            "SELECT id, evidence_type, content_hash, created_at FROM guardian_evidence WHERE verification_id=? ORDER BY created_at",
+            (verification_id,),
+        ).fetchall()]
+    return {**dict(row), "request": json.loads(row["request_json"]), "report": json.loads(row["report_json"]), "evidence": evidence}
+
+
+@app.post("/api/v1/guardian/verifications/{verification_id}/cancel")
+async def cancel_guardian_verification(verification_id: str, request: Request):
+    with _connection() as connection:
+        row = connection.execute("SELECT * FROM guardian_verifications WHERE id=?", (verification_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Guardian verification not found.")
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, row["project_id"], actor)
+        if row["status"] in {"passed", "passed_with_warnings", "passed_within_scope", "failed", "cancelled"}:
+            raise HTTPException(409, "Guardian verification has already completed.")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        connection.execute("UPDATE guardian_verifications SET status='cancelled',updated_at=? WHERE id=?", (timestamp, verification_id))
+    return {"id": verification_id, "status": "cancelled"}
+
+
+@app.post("/api/v1/guardian/static-validate")
+async def guardian_static_validate(payload: dict[str, str]):
+    source = payload.get("source", "")
+    language = payload.get("language", "")
+    if not source or not language:
+        raise HTTPException(422, "source and language are required.")
+    return static_validate(source, language)
+
+
+@app.get("/api/v1/guardian/capabilities")
+async def guardian_capabilities():
+    return {
+        "verification_version": "guardian-0.1",
+        "items": [
+            {"mode": "code", "status": "available", "execution": "static"},
+            {"mode": "differential", "status": "available", "execution": "provided_observations"},
+            {"mode": "security", "status": "available", "execution": "static_boundary"},
+            {"mode": "comprehensive", "status": "partial", "execution": "static_and_evidence_only"},
+            {"mode": "full_project", "status": "unavailable", "execution": "requires_hardened_sandbox"},
+            {"mode": "ui", "status": "unavailable", "execution": "requires_browser_sandbox"},
+            {"mode": "performance", "status": "unavailable", "execution": "requires_isolated_runtime"},
+        ],
+    }

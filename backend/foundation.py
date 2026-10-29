@@ -141,6 +141,18 @@ def initialize_foundation(connection: sqlite3.Connection) -> None:
           FOREIGN KEY(project_id) REFERENCES projects(id)
         );
         CREATE INDEX IF NOT EXISTS idx_reforge_project ON reforge_operations(project_id, created_at);
+        CREATE TABLE IF NOT EXISTS guardian_verifications (
+          id TEXT PRIMARY KEY, project_id TEXT NOT NULL, migration_id TEXT,
+          request_json TEXT NOT NULL, status TEXT NOT NULL, report_json TEXT NOT NULL,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+        CREATE TABLE IF NOT EXISTS guardian_evidence (
+          id TEXT PRIMARY KEY, verification_id TEXT NOT NULL, evidence_type TEXT NOT NULL,
+          content_json TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL,
+          FOREIGN KEY(verification_id) REFERENCES guardian_verifications(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guardian_project ON guardian_verifications(project_id, created_at);
         """
     )
     DATA_ROOT.mkdir(parents=True, exist_ok=True)

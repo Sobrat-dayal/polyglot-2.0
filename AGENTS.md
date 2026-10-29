@@ -37,3 +37,8 @@
   live infrastructure, databases, identity providers, or deployment systems
   without an exact, audited approval boundary. Generated contracts and
   manifests require validation evidence and must not expose secrets.
+- Guardian must treat imported and generated code as untrusted. Do not execute
+  project code in the API process or claim dynamic, browser, database, security,
+  or performance verification without a validated hardened sandbox and saved
+  evidence. Partial results must remain explicitly scoped and inconclusive
+  checks must not be reported as passes.
