@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Polyglot | Universal Code Translator",
-  description: "Translate code between any languages instantly.",
+  title: "Polyglot 2.0 | AI Code Translator",
+  description: "A developer-focused AI code translation workspace.",
 };
 
 export default function RootLayout({

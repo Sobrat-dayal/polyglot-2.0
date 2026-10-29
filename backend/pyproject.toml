@@ -1,16 +1,17 @@
 [tool.poetry]
-name = "polyglot-backend"
+name = "polyglot-2-api"
 version = "0.1.0"
-description = "Backend for Polyglot Universal Code Translator"
+description = "Canonical API for Polyglot 2.0"
 authors = ["Polyglot Team"]
 
 [tool.poetry.dependencies]
 python = "^3.11"
-flask = "^3.0.0"
-flask-cors = "^4.0.0"
-google-genai = "^0.2.0"
+fastapi = "^0.115.0"
+uvicorn = {version = "^0.30.0", extras = ["standard"]}
+httpx = "^0.27.0"
+google-genai = "^1.0.0"
+pydantic-settings = "^2.6.0"
 python-dotenv = "^1.0.0"
-gunicorn = "^21.2.0"
 
 [build-system]
 requires = ["poetry-core"]

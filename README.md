@@ -1,101 +1,73 @@
-# Polyglot: Universal Code Translator
+# Polyglot 2.0
 
-![Polyglot Banner](https://img.shields.io/badge/Polyglot-Universal_Code_Translator-blue?style=for-the-badge&logo=google-translate)
+Polyglot 2.0 is a developer-focused AI code translation workspace. Stage 1
+provides a Next.js/Monaco client, a canonical typed FastAPI service, protected
+Gemini/NVIDIA NIM/Groq adapters, and local SQLite translation history.
 
-**Polyglot** is a powerful, AI-driven platform that acts as a "Google Translate for Code". It allows developers to instantly translate code snippets from any programming language to another with high accuracy, preserving logic and structure.
+## Run locally (PowerShell)
 
-## 🚀 What Does It Do?
+```powershell
+Copy-Item .env.example .env
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install fastapi "uvicorn[standard]" httpx google-genai pydantic-settings python-dotenv pytest
+uvicorn app:app --reload --port 8000
+```
 
-Polyglot solves the "Tower of Babel" problem in software engineering.
-- **Input:** Code in Language A (e.g., Python).
-- **Process:** The engine analyzes the syntax, semantics, and logic using advanced AI models (Google Gemini).
-- **Output:** Semantically equivalent code in Language B (e.g., JavaScript, Go, Rust).
+In another terminal:
 
-### 💡 How It Helps Programmers
+```powershell
+npm ci
+$env:POLYGLOT_API_URL = "http://127.0.0.1:8000"
+npm run dev
+```
 
-1.  **Legacy Migration:** Quickly convert old codebases (e.g., Java 7, PHP) to modern stacks (Go, Rust, TypeScript) without rewriting from scratch.
-2.  **Learning New Languages:** Understand how a concept you know in Python is implemented in Rust or C++. It's the ultimate learning tool.
-3.  **Cross-Platform Development:** Port logic from a backend service (Python) to a frontend SDK (TypeScript) or a mobile app (Swift) instantly.
-4.  **Quick Prototyping:** Write in the language you are fastest in (e.g., Python), then translate to the target production language (e.g., C++).
+Open `http://localhost:3000`. Add at least one provider key to `.env` before
+requesting a live translation. Keys are read only by the API process.
 
----
+## API
 
-## 🛠️ Tech Stack
+- `GET /health` and `GET /ready` provide liveness/readiness checks.
+- `POST /api/v1/translate` accepts source/target languages, provider, model,
+  mode, generation controls, and an explanation flag.
+- `GET /api/v1/history` lists saved translation metadata.
+- `DELETE /api/v1/history/{id}` removes a saved translation.
+- OpenAPI is available at `http://localhost:8000/docs`.
 
-### Frontend (The Face)
--   **Framework:** [Next.js 14+](https://nextjs.org/) (App Router)
--   **Styling:** [Tailwind CSS](https://tailwindcss.com/)
--   **Editor:** [Monaco Editor](https://microsoft.github.io/monaco-editor/) (VS Code's editor engine) for professional syntax highlighting.
--   **Icons:** Lucide React.
+The API returns translated code in `generated_code`; provider failures are
+non-2xx responses and are never rendered as translated source.
 
-### Backend (The Brain)
--   **Framework:** [Flask](https://flask.palletsprojects.com/) (Python)
--   **AI Engine:** [Google Gemini 2.5 Flash](https://deepmind.google/technologies/gemini/) via `google-genai` SDK.
--   **Architecture:** REST API serving the frontend.
+## Provider configuration
 
----
+| Variable | Provider | Example model |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | Google Gemini | `gemini-2.5-flash` |
+| `NVIDIA_API_KEY` | NVIDIA NIM | `qwen/qwen2.5-coder-32b-instruct` |
+| `GROQ_API_KEY` | Groq | `qwen/qwen3-32b` |
 
-## ⚡ Getting Started
+Model access depends on the account and provider. Live integrations are not
+run in CI; the automated suite covers validation and service behavior without
+requiring credentials.
 
-Follow these steps to run the application locally.
+## Validation
 
-### Prerequisites
--   Node.js & npm
--   Python 3.11+
--   A Google Gemini API Key (Get one [here](https://aistudio.google.com/app/apikey))
+```powershell
+npm run lint
+npm run typecheck
+npm run build
+cd backend
+pytest
+```
 
-### Step 1: Start the Backend (Python)
+Docker users can run `docker compose up --build` after creating `.env`.
 
-1.  Navigate to the backend directory:
-    ```bash
-    cd backend
-    ```
-2.  Create a `.env` file and add your API key:
-    ```bash
-    # Create .env file
-    echo "GEMINI_API_KEY=your_actual_api_key_here" > .env
-    ```
-3.  Install dependencies:
-    ```bash
-    pip install flask flask-cors google-genai python-dotenv
-    ```
-4.  Run the server:
-    ```bash
-    python app.py
-    ```
-    *Server will start on `http://localhost:5000`*
+## Architecture and limitations
 
-### Step 2: Start the Frontend (Next.js)
+The browser calls the Next.js server route, which proxies to FastAPI. FastAPI
+validates the request, delegates to a provider adapter, and persists completed
+metadata/code in SQLite. Provider credentials never cross that boundary.
 
-1.  Open a **new terminal** window.
-2.  Navigate to the root directory:
-    ```bash
-    # If you are in backend, go back up
-    cd ..
-    ```
-3.  Install dependencies:
-    ```bash
-    npm install
-    ```
-4.  Run the development server:
-    ```bash
-    npm run dev
-    ```
-    *Frontend will start on `http://localhost:3000`*
-
-### Step 3: Translate!
-
-Open [http://localhost:3000](http://localhost:3000) in your browser.
-1.  Select your **Source Language** (e.g., Python).
-2.  Type your code in the left editor.
-3.  Select your **Target Language** (e.g., JavaScript).
-4.  Click **Translate**.
-
----
-
-## 🔮 Future Roadmap
-
--   [ ] **File Upload:** Translate entire files or projects.
--   [ ] **AST Visualization:** See the abstract syntax tree of your code.
--   [ ] **History:** Save your past translations.
--   [ ] **Custom Models:** Fine-tune models for specific company coding styles.
+Stage 1 intentionally does not claim whole-project migration, AST-equivalence
+proof, language-specific formatting, accounts, or live model discovery. Those
+are suitable follow-up work after the single-snippet contract is stable.

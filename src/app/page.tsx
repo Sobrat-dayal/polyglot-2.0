@@ -1,114 +1,59 @@
 'use client';
 
-import React from 'react';
-import { ArrowRightLeft, Copy, Download, Share2, Sparkles } from 'lucide-react';
-import { LanguageSelector } from '@/components/LanguageSelector';
-import { TranslationCanvas } from '@/components/TranslationCanvas';
+import { ArrowRightLeft, Copy, Download, Moon, Sparkles, Sun } from 'lucide-react';
+import Editor from '@monaco-editor/react';
+import { useState } from 'react';
 import { useTranslation } from '@/hooks/useTranslation';
 
-const LANGUAGES = [
-  'Python', 'JavaScript', 'TypeScript', 'Go', 'Rust',
-  'Java', 'C++', 'C#', 'Ruby', 'PHP', 'Swift'
-];
+const LANGUAGES = ['python', 'javascript', 'typescript', 'java', 'c', 'c++', 'c#', 'go', 'rust', 'php', 'ruby', 'kotlin', 'swift', 'dart'];
+const MODELS: Record<string, string> = {
+  gemini: 'gemini-2.5-flash',
+  nvidia: 'qwen/qwen2.5-coder-32b-instruct',
+  groq: 'qwen/qwen3-32b',
+};
 
 export default function PolyglotPage() {
-  const {
-    sourceCode,
-    setSourceCode,
-    targetCode,
-    sourceLang,
-    setSourceLang,
-    targetLang,
-    setTargetLang,
-    isLoading,
-    swapLanguages,
-    handleTranslate
-  } = useTranslation();
-
+  const [dark, setDark] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const translation = useTranslation();
+  const copyOutput = async () => {
+    await navigator.clipboard.writeText(translation.targetCode);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+  const downloadOutput = () => {
+    const blob = new Blob([translation.targetCode], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `translated.${translation.targetLang === 'c++' ? 'cpp' : translation.targetLang}`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
   return (
-    <div className="flex h-screen flex-col bg-[#0e0e0e] text-white font-sans">
-      {/* Header */}
-      <header className="flex items-center justify-between border-b border-gray-800 px-6 py-4 bg-[#161616]">
-        <div className="flex items-center space-x-2">
-          <div className="bg-blue-600 p-1.5 rounded-lg">
-            <Sparkles className="w-5 h-5 text-white" />
-          </div>
-          <h1 className="text-xl font-semibold tracking-tight">Polyglot</h1>
-        </div>
-        <div className="flex items-center space-x-4">
-          {/* Placeholder for user profile or settings */}
-        </div>
+    <main className={dark ? 'app dark' : 'app'}>
+      <header className="topbar">
+        <div className="brand"><Sparkles size={18} /><strong>Polyglot 2.0</strong><span>AI code translation</span></div>
+        <button className="icon-button" onClick={() => setDark(!dark)} aria-label="Toggle theme">{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
       </header>
-
-      {/* Control Bar */}
-      <div className="flex items-center justify-between border-b border-gray-800 px-6 py-3 bg-[#161616]">
-        <div className="flex items-center space-x-4 flex-1">
-          <LanguageSelector
-            selected={sourceLang}
-            onChange={setSourceLang}
-            options={LANGUAGES}
-            label="Source"
-          />
-
-          <button
-            onClick={swapLanguages}
-            className="p-2 hover:bg-gray-700 rounded-full transition-colors text-gray-400 hover:text-white"
-            title="Swap Languages"
-          >
-            <ArrowRightLeft className="w-5 h-5" />
-          </button>
-
-          <LanguageSelector
-            selected={targetLang}
-            onChange={setTargetLang}
-            options={LANGUAGES}
-            label="Target"
-          />
+      <section className="workspace">
+        <div className="toolbar">
+          <label>Source<select value={translation.sourceLang} onChange={(event) => translation.setSourceLang(event.target.value)}>{LANGUAGES.map((language) => <option key={language}>{language}</option>)}</select></label>
+          <button className="swap" onClick={translation.swapLanguages} title="Swap languages"><ArrowRightLeft size={17} /></button>
+          <label>Target<select value={translation.targetLang} onChange={(event) => translation.setTargetLang(event.target.value)}>{LANGUAGES.map((language) => <option key={language}>{language}</option>)}</select></label>
+          <label>Provider<select value={translation.provider} onChange={(event) => translation.setProvider(event.target.value)}>{Object.keys(MODELS).map((name) => <option key={name}>{name}</option>)}</select></label>
+          <label>Mode<select value={translation.mode} onChange={(event) => translation.setMode(event.target.value)}>{['standard', 'idiomatic', 'educational', 'modernize', 'type-safe', 'performance-oriented'].map((mode) => <option key={mode}>{mode}</option>)}</select></label>
+          <button className="translate" disabled={translation.isLoading || !translation.sourceCode.trim()} onClick={translation.handleTranslate}>{translation.isLoading ? 'Translating…' : 'Translate'}</button>
         </div>
-
-        <button
-          onClick={handleTranslate}
-          disabled={isLoading || !sourceCode.trim()}
-          className={`
-            flex items-center space-x-2 px-6 py-2.5 rounded-lg font-medium transition-all
-            ${isLoading || !sourceCode.trim()
-              ? 'bg-gray-800 text-gray-500 cursor-not-allowed'
-              : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20'}
-          `}
-        >
-          <span>{isLoading ? 'Translating...' : 'Translate'}</span>
-        </button>
-      </div>
-
-      {/* Main Canvas */}
-      <TranslationCanvas
-        sourceCode={sourceCode}
-        targetCode={targetCode}
-        sourceLang={sourceLang}
-        targetLang={targetLang}
-        onSourceChange={(val) => setSourceCode(val || '')}
-        isLoading={isLoading}
-      />
-
-      {/* Footer / Actions */}
-      <div className="border-t border-gray-800 bg-[#161616] px-6 py-3 flex justify-between items-center text-sm text-gray-400">
-        <div className="flex space-x-6">
-          <button className="flex items-center space-x-2 hover:text-white transition-colors">
-            <Copy className="w-4 h-4" />
-            <span>Copy</span>
-          </button>
-          <button className="flex items-center space-x-2 hover:text-white transition-colors">
-            <Share2 className="w-4 h-4" />
-            <span>Share</span>
-          </button>
+        <div className="model-note">Model: <code>{MODELS[translation.provider]}</code> · Credentials stay on the API server</div>
+        <div className="editors">
+          <div className="editor-panel"><div className="panel-title">Source · {translation.sourceLang}</div><Editor height="calc(100vh - 220px)" theme={dark ? 'vs-dark' : 'light'} language={translation.sourceLang} value={translation.sourceCode} onChange={(value) => translation.setSourceCode(value ?? '')} options={{ minimap: { enabled: false }, wordWrap: 'on', padding: { top: 12 }, fontSize: 14 }} /></div>
+          <div className="editor-panel"><div className="panel-title">Output · {translation.targetLang}</div><Editor height="calc(100vh - 220px)" theme={dark ? 'vs-dark' : 'light'} language={translation.targetLang} value={translation.targetCode} options={{ readOnly: true, minimap: { enabled: false }, wordWrap: 'on', padding: { top: 12 }, fontSize: 14 }} /></div>
         </div>
-        <div className="flex space-x-6">
-          <button className="flex items-center space-x-2 hover:text-white transition-colors">
-            <Download className="w-4 h-4" />
-            <span>Download</span>
-          </button>
-        </div>
-      </div>
-    </div>
+        {translation.error && <div className="error" role="alert">{translation.error}<button onClick={translation.handleTranslate}>Retry</button></div>}
+        {translation.result && <div className="result-bar"><span>{translation.result.provider} / {translation.result.model} · {translation.result.duration_ms} ms</span><span>{translation.result.explanation ?? 'Translation completed.'}</span></div>}
+        <footer><button onClick={copyOutput} disabled={!translation.targetCode}><Copy size={15} />{copied ? 'Copied' : 'Copy output'}</button><button onClick={downloadOutput} disabled={!translation.targetCode}><Download size={15} />Download</button></footer>
+      </section>
+    </main>
   );
 }
