@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 
-from neural_core import AIError, AIRequest, ModelInfo, ModelRouter, ProviderAdapter, validate_custom_endpoint
+from neural_core import AIError, AIRequest, ModelInfo, ModelRouter, OpenAICompatibleAdapter, ProviderAdapter, validate_custom_endpoint
 
 
 class FakeProvider(ProviderAdapter):
@@ -38,4 +38,27 @@ def test_custom_endpoint_policy():
     assert validate_custom_endpoint("https://example.com/v1") == "https://example.com/v1"
     with pytest.raises(ValueError):
         validate_custom_endpoint("http://127.0.0.1:11434/v1")
+
+
+def test_openai_compatible_model_discovery_handles_null_data(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": None}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr("neural_core.httpx.AsyncClient", lambda **_kwargs: Client())
+    adapter = OpenAICompatibleAdapter("test", "https://example.test", {"default": "token"})
+    assert asyncio.run(adapter.models()) == []
     assert validate_custom_endpoint("http://127.0.0.1:11434/v1", allow_private=True)

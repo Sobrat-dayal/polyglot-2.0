@@ -179,7 +179,14 @@ app = FastAPI(title="Polyglot 2.0 API", version="1.0.0", lifespan=lifespan)
 neural_gateway = NeuralGateway()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("POLYGLOT_ALLOWED_ORIGINS", "http://localhost:3000").split(","),
+    allow_origins=[
+        origin.strip()
+        for origin in os.getenv(
+            "POLYGLOT_ALLOWED_ORIGINS",
+            "http://localhost:3000,http://127.0.0.1:3000",
+        ).split(",")
+        if origin.strip()
+    ],
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
     allow_credentials=True,

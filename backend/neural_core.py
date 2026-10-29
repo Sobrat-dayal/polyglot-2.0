@@ -95,7 +95,8 @@ class OpenAICompatibleAdapter(ProviderAdapter):
             async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
                 response = await client.get(f"{self.base_url}/models", headers=headers)
                 response.raise_for_status()
-                values = response.json().get("data", [])
+                body = response.json()
+                values = body.get("data") or [] if isinstance(body, dict) else []
                 return [
                     ModelInfo(self.name, item["id"], frozenset({"text", "code", "streaming"}), None, self.local, "available")
                     for item in values if isinstance(item, dict) and item.get("id")

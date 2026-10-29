@@ -31,6 +31,7 @@ export default function PolyglotPage() {
   const [migrationStatus, setMigrationStatus] = useState<{ id: string; status: string; task_count?: number; metrics?: { files_generated?: number } } | null>(null);
   const [reforgeStatus, setReforgeStatus] = useState<{ status: string; operation: string } | null>(null);
   const [guardianStatus, setGuardianStatus] = useState<{ status: string; id: string } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const apiUrl = process.env.NEXT_PUBLIC_POLYGLOT_API_URL ?? 'http://127.0.0.1:8000';
   const loadProjects = async () => {
     const response = await fetch(`${apiUrl}/api/v1/projects`);
@@ -53,9 +54,20 @@ export default function PolyglotPage() {
   const importZip = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    const response = await fetch(`${apiUrl}/api/v1/projects/import/zip?filename=${encodeURIComponent(file.name)}`, { method: 'POST', body: file });
-    if (response.ok) await loadProjects();
-    event.target.value = '';
+    setNotice(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/projects/import/zip?filename=${encodeURIComponent(file.name)}`, { method: 'POST', body: file });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || `Import failed (${response.status}).`);
+      }
+      await loadProjects();
+      setNotice(`Imported ${file.name}.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Project import failed.');
+    } finally {
+      event.target.value = '';
+    }
   };
   const importGitHub = async () => {
     const repository = window.prompt('GitHub repository (owner/name or HTTPS URL)');
@@ -206,6 +218,7 @@ export default function PolyglotPage() {
         <div className="brand"><Sparkles size={18} /><strong>Polyglot 2.0</strong><span>AI code translation</span></div>
         <div className="header-actions"><button className="account-button" onClick={account ? undefined : signIn}>{account ?? 'Sign in'}</button>{!account && <button className="account-button" onClick={register}>Register</button>}<button className="icon-button" onClick={() => setDark(!dark)} aria-label="Toggle theme">{dark ? <Sun size={18} /> : <Moon size={18} />}</button></div>
       </header>
+      {notice && <div className="notice" role="status">{notice}</div>}
       <section className="workspace">
         <aside className="project-sidebar">
           <div className="sidebar-heading"><span>Projects</span><button className="icon-button" onClick={createProject} title="Create project"><Plus size={16} /></button></div>
