@@ -68,6 +68,7 @@ from transmute import validate_output as transmute_validate_output
 from metamorphosis import MigrationRequest, archive_output, build_tasks, execute as execute_migration, ready_tasks
 from reforge import ReforgeRequest, execute as execute_reforge
 from guardian import GuardianRequest, build_report, compare_observations, static_validate
+from ascension import platform_audit, validate_manifest
 from fastapi.responses import StreamingResponse
 
 DATABASE_PATH = os.getenv("POLYGLOT_DATABASE_PATH", "polyglot.db")
@@ -1515,3 +1516,16 @@ async def guardian_capabilities():
             {"mode": "performance", "status": "unavailable", "execution": "requires_isolated_runtime"},
         ],
     }
+
+
+@app.get("/api/v1/platform/audit")
+async def platform_integration_audit():
+    return platform_audit()
+
+
+@app.post("/api/v1/platform/plugins/validate")
+async def validate_plugin_manifest(payload: dict[str, Any]):
+    try:
+        return validate_manifest(payload)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
