@@ -66,6 +66,7 @@ from transmute import LANGUAGES as TRANSMUTE_LANGUAGES
 from transmute import TransformRequest, capabilities as transmute_capabilities, transform as transmute_transform, unified_diff
 from transmute import validate_output as transmute_validate_output
 from metamorphosis import MigrationRequest, archive_output, build_tasks, execute as execute_migration, ready_tasks
+from reforge import ReforgeRequest, execute as execute_reforge
 from fastapi.responses import StreamingResponse
 
 DATABASE_PATH = os.getenv("POLYGLOT_DATABASE_PATH", "polyglot.db")
@@ -861,6 +862,57 @@ async def export_migration(migration_id: str, request: Request):
     archive_path = Path(row["output_path"]).with_suffix(".zip")
     archive_output(Path(row["output_path"]), archive_path)
     return FileResponse(archive_path, filename=f"migration-{migration_id}.zip", media_type="application/zip")
+
+
+@app.post("/api/v1/projects/{project_id}/reforge")
+async def create_reforge_operation(project_id: str, payload: ReforgeRequest, request: Request):
+    if payload.project_id != project_id:
+        raise HTTPException(422, "Project ID does not match Reforge request.")
+    if payload.mode == "dry_run" and payload.operation == "database":
+        raise HTTPException(422, "Database dry runs require a disposable database adapter; generation is available without a live connection.")
+    with _connection() as connection:
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, project_id, actor)
+        operation_id = str(uuid.uuid4())
+        result = execute_reforge(payload)
+        status_value = "awaiting_approval" if payload.require_approval and payload.mode in {"generate", "dry_run"} else "completed"
+        connection.execute("INSERT INTO reforge_operations VALUES(?,?,?,?,?,?,?,?,?)", (operation_id, project_id, payload.operation, payload.mode, json.dumps(payload.model_dump()), json.dumps(result), status_value, None, datetime.now(timezone.utc).isoformat()))
+    return {"id": operation_id, "status": status_value, "result": result}
+
+
+@app.get("/api/v1/reforge/operations/{operation_id}")
+async def get_reforge_operation(operation_id: str, request: Request):
+    with _connection() as connection:
+        row = connection.execute("SELECT * FROM reforge_operations WHERE id=?", (operation_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Reforge operation not found.")
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, row["project_id"], actor)
+    return {**dict(row), "request": json.loads(row["request_json"]), "result": json.loads(row["result_json"])}
+
+
+@app.post("/api/v1/reforge/operations/{operation_id}/approve")
+async def approve_reforge_operation(operation_id: str, request: Request):
+    with _connection() as connection:
+        row = connection.execute("SELECT * FROM reforge_operations WHERE id=?", (operation_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Reforge operation not found.")
+        actor = current_user(connection, request.cookies.get("polyglot_session"))
+        _authorized_project(connection, row["project_id"], actor)
+        if row["status"] != "awaiting_approval":
+            raise HTTPException(409, "Reforge operation is not awaiting approval.")
+        connection.execute("UPDATE reforge_operations SET status='approved',approved_by=? WHERE id=?", (actor, operation_id))
+    return {"id": operation_id, "status": "approved"}
+
+
+@app.get("/api/v1/reforge/capabilities")
+async def reforge_capabilities():
+    return {"items": [
+        {"operation": "database", "capability": "SQL type mapping", "status": "experimental", "execution": "generate_only"},
+        {"operation": "api", "capability": "REST to GraphQL/OpenAPI contract generation", "status": "experimental", "execution": "generate_only"},
+        {"operation": "infrastructure", "capability": "Compose-shaped service names to Kubernetes deployments", "status": "experimental", "execution": "generate_only"},
+        {"operation": "authentication", "capability": "OIDC/JWT migration analysis", "status": "planned", "execution": "analysis_only"},
+    ]}
 
 
 def _actor(request: Request) -> str:

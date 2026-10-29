@@ -134,6 +134,13 @@ def initialize_foundation(connection: sqlite3.Connection) -> None:
           FOREIGN KEY(migration_id) REFERENCES migrations(id)
         );
         CREATE INDEX IF NOT EXISTS idx_migrations_project ON migrations(project_id, created_at);
+        CREATE TABLE IF NOT EXISTS reforge_operations (
+          id TEXT PRIMARY KEY, project_id TEXT NOT NULL, operation TEXT NOT NULL,
+          mode TEXT NOT NULL, request_json TEXT NOT NULL, result_json TEXT NOT NULL,
+          status TEXT NOT NULL, approved_by TEXT, created_at TEXT NOT NULL,
+          FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_reforge_project ON reforge_operations(project_id, created_at);
         """
     )
     DATA_ROOT.mkdir(parents=True, exist_ok=True)

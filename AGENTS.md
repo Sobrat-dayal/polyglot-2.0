@@ -33,3 +33,7 @@
 - Metamorphosis may only transform authorized immutable snapshots, must persist
   task/event/checkpoint and provenance metadata, and must never mark failed or
   unsupported operations as complete.
+- Reforge defaults to generation/verification modes and must never connect to
+  live infrastructure, databases, identity providers, or deployment systems
+  without an exact, audited approval boundary. Generated contracts and
+  manifests require validation evidence and must not expose secrets.

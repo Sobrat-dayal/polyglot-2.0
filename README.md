@@ -123,6 +123,13 @@ StackForge configuration and Stage 6 transformations. Selected authorized
 snapshot files can be transformed into a generated target directory, tracked
 with task/event/provenance metadata, reviewed, and exported as a ZIP. See
 [docs/STAGE7_IMPLEMENTATION.md](docs/STAGE7_IMPLEMENTATION.md).
+
+## Reforge
+
+Stage 8 adds approval-gated, non-destructive database type mapping, REST API
+contract generation, Compose-shaped Kubernetes manifest generation, secret
+reference scanning, and persisted Reforge operation metadata. See
+[docs/STAGE8_IMPLEMENTATION.md](docs/STAGE8_IMPLEMENTATION.md).
 ## DeepScan
 
 Stage 4 adds a read-only static analysis baseline for authorized project
