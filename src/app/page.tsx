@@ -1,6 +1,6 @@
 'use client';
 
-import { ArrowRightLeft, Copy, Download, Moon, Sparkles, Sun } from 'lucide-react';
+import { ArrowRightLeft, Copy, Download, FolderOpen, Moon, Plus, Search, Sparkles, Sun } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import { useState } from 'react';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -16,6 +16,30 @@ export default function PolyglotPage() {
   const [dark, setDark] = useState(true);
   const [copied, setCopied] = useState(false);
   const translation = useTranslation();
+  const [projects, setProjects] = useState<Array<{ id: string; name: string; file_count: number; source_type: string }>>([]);
+  const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  const [files, setFiles] = useState<Array<{ relative_path: string; size_bytes: number; selected: number }>>([]);
+  const [fileSearch, setFileSearch] = useState('');
+  const apiUrl = process.env.NEXT_PUBLIC_POLYGLOT_API_URL ?? 'http://127.0.0.1:8000';
+  const loadProjects = async () => {
+    const response = await fetch(`${apiUrl}/api/v1/projects`);
+    if (response.ok) setProjects(await response.json());
+  };
+  const openProject = async (id: string) => {
+    setSelectedProject(id);
+    const response = await fetch(`${apiUrl}/api/v1/projects/${id}/files`);
+    if (response.ok) setFiles((await response.json()).files);
+  };
+  const createProject = async () => {
+    const name = window.prompt('Project name');
+    if (!name?.trim()) return;
+    await fetch(`${apiUrl}/api/v1/projects`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    await loadProjects();
+  };
+  const visibleFiles = files.filter((file) => file.relative_path.toLowerCase().includes(fileSearch.toLowerCase()));
   const copyOutput = async () => {
     await navigator.clipboard.writeText(translation.targetCode);
     setCopied(true);
@@ -37,6 +61,13 @@ export default function PolyglotPage() {
         <button className="icon-button" onClick={() => setDark(!dark)} aria-label="Toggle theme">{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
       </header>
       <section className="workspace">
+        <aside className="project-sidebar">
+          <div className="sidebar-heading"><span>Projects</span><button className="icon-button" onClick={createProject} title="Create project"><Plus size={16} /></button></div>
+          <button className="load-projects" onClick={loadProjects}><FolderOpen size={15} /> Load projects</button>
+          {projects.map((project) => <button className={`project-item ${selectedProject === project.id ? 'active' : ''}`} key={project.id} onClick={() => openProject(project.id)}><strong>{project.name}</strong><small>{project.file_count} files · {project.source_type}</small></button>)}
+          {selectedProject && <div className="file-browser"><div className="sidebar-heading"><span>Source snapshot</span></div><div className="file-search"><Search size={14} /><input placeholder="Filter files" value={fileSearch} onChange={(event) => setFileSearch(event.target.value)} /></div>{visibleFiles.map((file) => <button className="file-item" key={file.relative_path} onClick={async () => { const response = await fetch(`${apiUrl}/api/v1/projects/${selectedProject}/files/${file.relative_path}`); if (response.ok) translation.setSourceCode((await response.json()).content); }}><code>{file.relative_path}</code><small>{file.size_bytes} bytes</small></button>)}</div>}
+        </aside>
+        <div className="translator-pane">
         <div className="toolbar">
           <label>Source<select value={translation.sourceLang} onChange={(event) => translation.setSourceLang(event.target.value)}>{LANGUAGES.map((language) => <option key={language}>{language}</option>)}</select></label>
           <button className="swap" onClick={translation.swapLanguages} title="Swap languages"><ArrowRightLeft size={17} /></button>
@@ -53,6 +84,7 @@ export default function PolyglotPage() {
         {translation.error && <div className="error" role="alert">{translation.error}<button onClick={translation.handleTranslate}>Retry</button></div>}
         {translation.result && <div className="result-bar"><span>{translation.result.provider} / {translation.result.model} · {translation.result.duration_ms} ms</span><span>{translation.result.explanation ?? 'Translation completed.'}</span></div>}
         <footer><button onClick={copyOutput} disabled={!translation.targetCode}><Copy size={15} />{copied ? 'Copied' : 'Copy output'}</button><button onClick={downloadOutput} disabled={!translation.targetCode}><Download size={15} />Download</button></footer>
+        </div>
       </section>
     </main>
   );

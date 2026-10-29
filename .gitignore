@@ -6,6 +6,8 @@
 __pycache__/
 *.py[cod]
 *.db
+/polyglot-data/
+/backend/polyglot-data/
 /.pnp
 .pnp.*
 .yarn/*

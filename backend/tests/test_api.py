@@ -1,4 +1,6 @@
 import os
+import io
+import zipfile
 
 os.environ["POLYGLOT_DATABASE_PATH"] = ":memory:"
 
@@ -61,3 +63,31 @@ def test_translation_persists_success(monkeypatch, tmp_path):
     assert response.json()["generated_code"] == "console.log(1)"
     assert history_response.status_code == 200
     assert history_response.json()[0]["id"] == response.json()["id"]
+
+
+def test_project_and_safe_zip_import(tmp_path):
+    app_module.DATABASE_PATH = str(tmp_path / "projects.db")
+    app_module._init_database()
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("src/main.py", "print('ok')")
+    with TestClient(app) as client:
+        project = client.post(
+            "/api/v1/projects/import/zip?filename=demo.zip",
+            content=archive.getvalue(),
+            headers={"content-type": "application/zip"},
+        )
+        files = client.get(f"/api/v1/projects/{project.json()['id']}/files")
+    assert project.status_code == 200
+    assert files.json()["files"][0]["relative_path"] == "src/main.py"
+
+
+def test_zip_slip_is_rejected(tmp_path):
+    app_module.DATABASE_PATH = str(tmp_path / "unsafe.db")
+    app_module._init_database()
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("../escape.txt", "no")
+    with TestClient(app) as client:
+        response = client.post("/api/v1/projects/import/zip", content=archive.getvalue())
+    assert response.status_code == 422

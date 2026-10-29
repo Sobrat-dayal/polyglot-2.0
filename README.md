@@ -1,8 +1,11 @@
 # Polyglot 2.0
 
-Polyglot 2.0 is a developer-focused AI code translation workspace. Stage 1
-provides a Next.js/Monaco client, a canonical typed FastAPI service, protected
-Gemini/NVIDIA NIM/Groq adapters, and local SQLite translation history.
+Polyglot 2.0 is a developer-focused AI translation and project inspection
+workspace. Stage 1 provides the Monaco translator and protected Gemini/NVIDIA
+NIM/Groq adapters. Stage 2 adds persistent guest workspaces, project
+management, immutable source snapshots, public/authorized GitHub imports,
+safe ZIP imports, file inventory/search/selection, lifecycle actions, and
+activity history.
 
 ## Run locally (PowerShell)
 
@@ -20,35 +23,44 @@ In another terminal:
 ```powershell
 npm ci
 $env:POLYGLOT_API_URL = "http://127.0.0.1:8000"
+$env:NEXT_PUBLIC_POLYGLOT_API_URL = "http://127.0.0.1:8000"
 npm run dev
 ```
 
-Open `http://localhost:3000`. Add at least one provider key to `.env` before
-requesting a live translation. Keys are read only by the API process.
+Open `http://localhost:3000`. Add a provider key to `.env` before requesting a
+live translation. Keys and the optional `GITHUB_TOKEN` are read only by the
+API process.
 
-## API
+## Stage 2 API
 
-- `GET /health` and `GET /ready` provide liveness/readiness checks.
+- `GET /api/v1/workspaces` and `POST /api/v1/workspaces`
+- `GET /api/v1/projects?workspace_id=&search=`
+- `POST /api/v1/projects` for blank projects
+- `POST /api/v1/projects/import/zip` with an `application/zip` body
+- `POST /api/v1/projects/import/github` with `repository`, optional `branch`,
+  and optional `workspace_id`
+- `GET /api/v1/projects/{id}/files` with bounded path search
+- `GET /api/v1/projects/{id}/files/{path}` for read-only source preview
+- `POST /api/v1/projects/{id}/files/select` to persist selections
+- `PATCH`, archive/restore, `DELETE`, and activity endpoints for projects
+- `GET /api/v1/jobs` for the durable job-monitoring contract (job execution is
+  not yet enabled for imports)
+
+All imported source is kept under `POLYGLOT_DATA_ROOT` and is never executed.
+The ZIP service rejects absolute paths, `..` traversal, symlinks, excessive
+file counts, oversized files, and extraction quota violations. GitHub imports
+only accept HTTPS `github.com` URLs or `owner/repository` references. A
+server-side `GITHUB_TOKEN` can authorize private repository downloads without
+exposing a token to the browser.
+
+## Stage 1 API and providers
+
 - `POST /api/v1/translate` accepts source/target languages, provider, model,
   mode, generation controls, and an explanation flag.
-- `GET /api/v1/history` lists saved translation metadata.
-- `DELETE /api/v1/history/{id}` removes a saved translation.
+- `GET /health` and `GET /ready` provide service checks.
+- `GET /api/v1/history` and `DELETE /api/v1/history/{id}` manage translation
+  history.
 - OpenAPI is available at `http://localhost:8000/docs`.
-
-The API returns translated code in `generated_code`; provider failures are
-non-2xx responses and are never rendered as translated source.
-
-## Provider configuration
-
-| Variable | Provider | Example model |
-| --- | --- | --- |
-| `GEMINI_API_KEY` | Google Gemini | `gemini-2.5-flash` |
-| `NVIDIA_API_KEY` | NVIDIA NIM | `qwen/qwen2.5-coder-32b-instruct` |
-| `GROQ_API_KEY` | Groq | `qwen/qwen3-32b` |
-
-Model access depends on the account and provider. Live integrations are not
-run in CI; the automated suite covers validation and service behavior without
-requiring credentials.
 
 ## Validation
 
@@ -60,14 +72,11 @@ cd backend
 pytest
 ```
 
-Docker users can run `docker compose up --build` after creating `.env`.
+## Honest Stage 2 boundaries
 
-## Architecture and limitations
-
-The browser calls the Next.js server route, which proxies to FastAPI. FastAPI
-validates the request, delegates to a provider adapter, and persists completed
-metadata/code in SQLite. Provider credentials never cross that boundary.
-
-Stage 1 intentionally does not claim whole-project migration, AST-equivalence
-proof, language-specific formatting, accounts, or live model discovery. Those
-are suitable follow-up work after the single-snippet contract is stable.
+The current foundation uses SQLite and an in-process API. PostgreSQL/Alembic,
+real user authentication, Redis/Celery workers, SSE job progress, S3 artifact
+storage, private GitHub OAuth/App installation, and multi-user authorization
+are not claimed as complete yet. The domain tables and interfaces leave room
+for those integrations without changing the source snapshot contract. Stage 3
+AI orchestration has not been started.
