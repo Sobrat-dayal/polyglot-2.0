@@ -2,7 +2,7 @@
 
 import { ArrowRightLeft, Copy, Download, FolderOpen, Moon, Plus, Search, Sparkles, Sun } from 'lucide-react';
 import Editor from '@monaco-editor/react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { useTranslation } from '@/hooks/useTranslation';
 
@@ -22,6 +22,7 @@ export default function PolyglotPage() {
   const [files, setFiles] = useState<Array<{ relative_path: string; size_bytes: number; selected: number }>>([]);
   const [fileSearch, setFileSearch] = useState('');
   const [account, setAccount] = useState<string | null>(null);
+  const [aiModels, setAiModels] = useState<Array<{ provider: string; model: string; status: string }>>([]);
   const apiUrl = process.env.NEXT_PUBLIC_POLYGLOT_API_URL ?? 'http://127.0.0.1:8000';
   const loadProjects = async () => {
     const response = await fetch(`${apiUrl}/api/v1/projects`);
@@ -78,6 +79,9 @@ export default function PolyglotPage() {
     if (response.ok) setAccount(email);
   };
   const visibleFiles = files.filter((file) => file.relative_path.toLowerCase().includes(fileSearch.toLowerCase()));
+  useEffect(() => {
+    fetch(`${apiUrl}/api/v1/ai/models`).then((response) => response.ok ? response.json() : []).then(setAiModels).catch(() => setAiModels([]));
+  }, [apiUrl]);
   const copyOutput = async () => {
     await navigator.clipboard.writeText(translation.targetCode);
     setCopied(true);
@@ -114,9 +118,10 @@ export default function PolyglotPage() {
           <label>Target<select value={translation.targetLang} onChange={(event) => translation.setTargetLang(event.target.value)}>{LANGUAGES.map((language) => <option key={language}>{language}</option>)}</select></label>
           <label>Provider<select value={translation.provider} onChange={(event) => translation.setProvider(event.target.value)}>{Object.keys(MODELS).map((name) => <option key={name}>{name}</option>)}</select></label>
           <label>Mode<select value={translation.mode} onChange={(event) => translation.setMode(event.target.value)}>{['standard', 'idiomatic', 'educational', 'modernize', 'type-safe', 'performance-oriented'].map((mode) => <option key={mode}>{mode}</option>)}</select></label>
+          <label>Routing<select value={translation.routingStrategy} onChange={(event) => translation.setRoutingStrategy(event.target.value)}>{['manual', 'balanced', 'fast', 'economy', 'quality', 'local_only'].map((strategy) => <option key={strategy}>{strategy}</option>)}</select></label>
           <button className="translate" disabled={translation.isLoading || !translation.sourceCode.trim()} onClick={translation.handleTranslate}>{translation.isLoading ? 'Translating…' : 'Translate'}</button>
         </div>
-        <div className="model-note">Model: <code>{MODELS[translation.provider]}</code> · Credentials stay on the API server</div>
+        <div className="model-note">Model: <code>{MODELS[translation.provider]}</code> · {aiModels.filter((model) => model.provider === translation.provider).length} discovered · Routing: {translation.routingStrategy} · Credentials stay on the API server</div>
         <div className="editors">
           <div className="editor-panel"><div className="panel-title">Source · {translation.sourceLang}</div><Editor height="calc(100vh - 220px)" theme={dark ? 'vs-dark' : 'light'} language={translation.sourceLang} value={translation.sourceCode} onChange={(value) => translation.setSourceCode(value ?? '')} options={{ minimap: { enabled: false }, wordWrap: 'on', padding: { top: 12 }, fontSize: 14 }} /></div>
           <div className="editor-panel"><div className="panel-title">Output · {translation.targetLang}</div><Editor height="calc(100vh - 220px)" theme={dark ? 'vs-dark' : 'light'} language={translation.targetLang} value={translation.targetCode} options={{ readOnly: true, minimap: { enabled: false }, wordWrap: 'on', padding: { top: 12 }, fontSize: 14 }} /></div>

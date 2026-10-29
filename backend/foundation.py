@@ -79,6 +79,14 @@ def initialize_foundation(connection: sqlite3.Connection) -> None:
           id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, project_id TEXT, action TEXT NOT NULL,
           detail TEXT NOT NULL, created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS ai_requests (
+          id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, task_type TEXT NOT NULL,
+          provider TEXT, model TEXT, strategy TEXT NOT NULL, privacy_mode TEXT NOT NULL,
+          status TEXT NOT NULL, input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER,
+          duration_ms INTEGER, estimated_cost REAL, routing TEXT NOT NULL,
+          created_at TEXT NOT NULL, error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_requests_workspace ON ai_requests(workspace_id, created_at);
         """
     )
     DATA_ROOT.mkdir(parents=True, exist_ok=True)

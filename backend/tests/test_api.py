@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import app as app_module
 from engine.translator import TranslationResult
+from neural_core import AIResponse
 
 app = app_module.app
 
@@ -120,3 +121,37 @@ def test_account_project_job_and_artifact_lifecycle(tmp_path):
     assert job.status_code == 200
     assert duplicate.json()["id"] == job.json()["id"]
     assert artifact.status_code == 200
+
+
+def test_neural_catalog_and_agents_are_typed(tmp_path):
+    app_module.DATABASE_PATH = str(tmp_path / "neural.db")
+    app_module._init_database()
+    with TestClient(app) as client:
+        providers = client.get("/api/v1/ai/providers")
+        agents = client.get("/api/v1/ai/agents")
+    assert providers.status_code == 200
+    assert {item["name"] for item in providers.json()} >= {"gemini", "nvidia", "groq", "ollama"}
+    assert agents.json()[0]["id"]
+
+
+def test_routed_translation_uses_neural_gateway(monkeypatch, tmp_path):
+    app_module.DATABASE_PATH = str(tmp_path / "routed.db")
+    app_module._init_database()
+
+    async def fake_generate(request, request_id):
+        return AIResponse(
+            request_id=request_id, provider="ollama", model="local-test",
+            content="console.log(1)", duration_ms=4,
+        )
+
+    monkeypatch.setattr(app_module.neural_gateway, "generate", fake_generate)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/translate",
+            json={
+                "source_lang": "python", "target_lang": "javascript",
+                "source_code": "print(1)", "strategy": "local_only",
+            },
+        )
+    assert response.status_code == 200
+    assert response.json()["provider"] == "ollama"

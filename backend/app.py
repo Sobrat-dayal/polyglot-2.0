@@ -41,6 +41,8 @@ from foundation import (
 from fastapi.responses import FileResponse
 import httpx
 from auth import create_session, current_user, password_hash, verify_password, read_session
+from neural_core import AIError, AIRequest, AGENTS, NeuralGateway, run_agent
+from fastapi.responses import StreamingResponse
 
 DATABASE_PATH = os.getenv("POLYGLOT_DATABASE_PATH", "polyglot.db")
 
@@ -51,12 +53,13 @@ class TranslationRequest(BaseModel):
     source_code: str = Field(min_length=1, max_length=500_000)
     source_language: str = Field(alias="source_lang", min_length=1)
     target_language: str = Field(alias="target_lang", min_length=1)
-    provider: Literal["gemini", "nvidia", "groq"] = "gemini"
+    provider: Literal["gemini", "nvidia", "groq", "ollama"] = "gemini"
     model: str | None = None
     mode: Literal[
         "standard", "idiomatic", "educational", "modernize",
         "type-safe", "performance-oriented"
     ] = "standard"
+    strategy: Literal["manual", "fast", "economy", "quality", "balanced", "local_only"] = "manual"
     coding_preferences: str | None = Field(default=None, max_length=5_000)
     include_explanation: bool = True
     temperature: float = Field(default=0.2, ge=0, le=2)
@@ -132,6 +135,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Polyglot 2.0 API", version="1.0.0", lifespan=lifespan)
+neural_gateway = NeuralGateway()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("POLYGLOT_ALLOWED_ORIGINS", "http://localhost:3000").split(","),
@@ -154,6 +158,120 @@ async def ready() -> dict[str, str]:
     except sqlite3.Error as error:
         raise HTTPException(status_code=503, detail="Database is not ready") from error
     return {"status": "ready"}
+
+
+@app.get("/api/v1/ai/providers")
+async def ai_providers():
+    return [
+        {"name": name, "local": adapter.local, "configured": bool(getattr(adapter, "profiles", {"default": os.getenv("GEMINI_API_KEY", "")}).get("default", "")) or adapter.local}
+        for name, adapter in neural_gateway.adapters.items()
+    ]
+
+
+@app.get("/api/v1/ai/models")
+async def ai_models():
+    models = await neural_gateway.router.catalog()
+    return [model.__dict__ for model in models]
+
+
+@app.get("/api/v1/ai/agents")
+async def ai_agents():
+    return [agent.model_dump() for agent in AGENTS.values()]
+
+
+@app.post("/api/v1/ai/agents/{agent_id}/run")
+async def ai_agent_run(agent_id: str, payload: dict[str, str]):
+    try:
+        return await run_agent(neural_gateway, agent_id, payload.get("content", ""), payload.get("strategy", "balanced"))
+    except AIError as error:
+        raise HTTPException(error.status_code, error.message) from error
+
+
+def _project_context(connection: sqlite3.Connection, project_id: str | None, user_id: str, budget: int) -> list[dict[str, str]]:
+    if not project_id:
+        return []
+    project = connection.execute("SELECT workspace_id,snapshot_path FROM projects WHERE id=?", (project_id,)).fetchone()
+    if not project or not connection.execute(
+        "SELECT 1 FROM workspace_members WHERE workspace_id=? AND user_id=?", (project["workspace_id"], user_id)
+    ).fetchone():
+        raise HTTPException(403, "You do not have access to this project.")
+    rows = connection.execute(
+        "SELECT relative_path FROM project_files WHERE project_id=? AND selected=1 ORDER BY relative_path LIMIT 50",
+        (project_id,),
+    ).fetchall()
+    context: list[dict[str, str]] = []
+    used = 0
+    root = Path(project["snapshot_path"]).resolve()
+    for row in rows:
+        target = (root / Path(*PurePosixPath(row["relative_path"]).parts)).resolve()
+        if root not in target.parents or not target.is_file() or target.stat().st_size > 200_000:
+            continue
+        content = target.read_text(encoding="utf-8", errors="replace")
+        if used + len(content) > budget:
+            break
+        context.append({"role": "user", "content": f"Project file {row['relative_path']}:\n{content}"})
+        used += len(content)
+    return context
+
+
+@app.post("/api/v1/ai/generate")
+async def ai_generate(payload: AIRequest, request: Request):
+    request_id = str(uuid.uuid4())
+    actor = _actor(request)
+    with _connection() as connection:
+        context = _project_context(connection, payload.project_id, actor, payload.token_budget * 4)
+    request.messages.extend(context)
+    try:
+        result = await neural_gateway.generate(payload, request_id)
+    except AIError as error:
+        with _connection() as connection:
+            connection.execute(
+                "INSERT INTO ai_requests(id,workspace_id,project_id,task_type,strategy,privacy_mode,status,routing,created_at,error) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (request_id, payload.workspace_id, payload.project_id, payload.task_type, payload.strategy, payload.privacy_mode, "failed", "{}", datetime.now(timezone.utc).isoformat(), error.message),
+            )
+        raise HTTPException(error.status_code, error.message) from error
+    with _connection() as connection:
+        connection.execute(
+            """INSERT INTO ai_requests(id,workspace_id,project_id,task_type,provider,model,strategy,
+            privacy_mode,status,input_tokens,output_tokens,total_tokens,duration_ms,estimated_cost,
+            routing,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (result.request_id, payload.workspace_id, payload.project_id, payload.task_type, result.provider,
+             result.model, payload.strategy, payload.privacy_mode, result.status, result.input_tokens,
+             result.output_tokens, result.total_tokens, result.duration_ms, result.estimated_cost,
+             json.dumps(result.routing), datetime.now(timezone.utc).isoformat()),
+        )
+    return result
+
+
+@app.post("/api/v1/ai/stream")
+async def ai_stream(payload: AIRequest, request: Request):
+    request_id = str(uuid.uuid4())
+
+    async def events():
+        try:
+            result = await neural_gateway.generate(payload, request_id)
+            for index in range(0, len(result.content), 256):
+                if await request.is_disconnected():
+                    return
+                chunk = result.content[index:index + 256].replace("\n", "\\n")
+                yield f"event: token\ndata: {json.dumps({'text': chunk})}\n\n"
+            yield f"event: complete\ndata: {result.model_dump_json()}\n\n"
+        except AIError as error:
+            yield f"event: error\ndata: {json.dumps({'detail': error.message})}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/v1/ai/usage")
+async def ai_usage(request: Request, limit: int = 100):
+    actor = _actor(request)
+    with _connection() as connection:
+        rows = connection.execute(
+            """SELECT r.* FROM ai_requests r LEFT JOIN projects p ON p.id=r.project_id
+               LEFT JOIN workspace_members m ON m.workspace_id=COALESCE(r.workspace_id,p.workspace_id)
+               WHERE m.user_id=? ORDER BY r.created_at DESC LIMIT ?""", (actor, min(max(limit, 1), 100))
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def _actor(request: Request) -> str:
@@ -310,7 +428,7 @@ async def import_github(payload: dict[str, str]):
         headers = {}
         github_token = os.getenv("GITHUB_TOKEN")
         if github_token:
-            headers["Authorization"] = f"Bearer {github_token}"
+            headers["Authorization"] = "Bearer " + github_token
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
@@ -565,19 +683,48 @@ async def translate(payload: TranslationRequest, request: Request) -> Translatio
     started = time.perf_counter()
     translation_id = str(uuid.uuid4())
     try:
-        result = await translate_with_provider(
-            source_code=payload.source_code,
-            source_language=payload.source_language,
-            target_language=payload.target_language,
-            provider_name=payload.provider,
-            model=payload.model,
-            mode=payload.mode,
-            coding_preferences=payload.coding_preferences,
-            include_explanation=payload.include_explanation,
-            temperature=payload.temperature,
-            max_tokens=payload.max_tokens,
-            cancelled=lambda: await_request_cancelled(request),
-        )
+        if payload.strategy == "manual":
+            result = await translate_with_provider(
+                source_code=payload.source_code,
+                source_language=payload.source_language,
+                target_language=payload.target_language,
+                provider_name=payload.provider,
+                model=payload.model,
+                mode=payload.mode,
+                coding_preferences=payload.coding_preferences,
+                include_explanation=payload.include_explanation,
+                temperature=payload.temperature,
+                max_tokens=payload.max_tokens,
+                cancelled=lambda: await_request_cancelled(request),
+            )
+        else:
+            gateway_result = await neural_gateway.generate(
+                AIRequest(
+                    task_type="code_translation",
+                    provider=payload.provider,
+                    model=payload.model,
+                    strategy=payload.strategy,
+                    privacy_mode="local_only" if payload.strategy == "local_only" else "cloud_allowed",
+                    token_budget=payload.max_tokens,
+                    messages=[{
+                        "role": "user",
+                        "content": f"Translate {payload.source_language} to {payload.target_language} in {payload.mode} mode. Return only code.\n{payload.source_code}",
+                    }],
+                ),
+                translation_id,
+            )
+            from engine.translator import TranslationResult
+            result = TranslationResult(
+                code=gateway_result.content, provider=gateway_result.provider,
+                model=gateway_result.model, explanation=None, warnings=[],
+                validation={"status": "not_run"}, token_usage={
+                    key: value for key, value in {
+                        "prompt_tokens": gateway_result.input_tokens,
+                        "completion_tokens": gateway_result.output_tokens,
+                        "total_tokens": gateway_result.total_tokens,
+                    }.items() if value is not None
+                } or None,
+            )
     except asyncio.CancelledError as error:
         raise HTTPException(status_code=499, detail="Translation request was cancelled") from error
     except TranslationError as error:

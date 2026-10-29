@@ -6,7 +6,8 @@ NIM/Groq adapters. Stage 2 adds persistent guest workspaces, project
 management, immutable source snapshots, public/authorized GitHub imports,
 safe ZIP imports, file inventory/search/selection, lifecycle actions, activity
 history, password-based accounts, signed HttpOnly sessions, membership checks,
-durable job records, local artifact storage, and job cancellation.
+durable job records, local artifact storage, job cancellation, and a Neural
+Core for provider-independent model discovery and routing.
 
 ## Run locally (PowerShell)
 
@@ -66,6 +67,17 @@ exposing a token to the browser.
 - `GET /api/v1/history` and `DELETE /api/v1/history/{id}` manage translation
   history.
 - OpenAPI is available at `http://localhost:8000/docs`.
+
+## Stage 3 Neural Core
+
+The backend exposes typed AI infrastructure at `/api/v1/ai`: provider status,
+model discovery, bounded agent definitions, generation, and usage records.
+NVIDIA NIM, Groq (including `GROQ_API_1_KEY` and `GROQ_API_2_KEY` profiles),
+Gemini, and configurable local Ollama-compatible endpoints are supported.
+Routing strategies include manual, fast, economy, quality, balanced, and
+local-only. Local-only mode fails closed and never selects a cloud adapter.
+See [docs/STAGE3_IMPLEMENTATION.md](docs/STAGE3_IMPLEMENTATION.md) for
+capabilities, provider verification status, and deployment boundaries.
 
 ## Validation
 

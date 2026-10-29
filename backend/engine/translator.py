@@ -79,7 +79,7 @@ async def _openai_compatible(
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": "Bearer " + api_key},
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],

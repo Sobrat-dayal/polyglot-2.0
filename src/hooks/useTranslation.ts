@@ -21,6 +21,7 @@ export function useTranslation() {
   const [targetLang, setTargetLang] = useState('javascript');
   const [provider, setProvider] = useState('gemini');
   const [mode, setMode] = useState('standard');
+  const [routingStrategy, setRoutingStrategy] = useState('manual');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TranslationResult | null>(null);
@@ -42,6 +43,7 @@ export function useTranslation() {
           source_lang: sourceLang,
           target_lang: targetLang,
           provider,
+          strategy: routingStrategy,
           mode,
           include_explanation: true,
         }),
@@ -57,7 +59,7 @@ export function useTranslation() {
     } finally {
       if (!controller.signal.aborted) setIsLoading(false);
     }
-  }, [isLoading, mode, provider, sourceCode, sourceLang, targetLang]);
+  }, [isLoading, mode, provider, routingStrategy, sourceCode, sourceLang, targetLang]);
 
   const swapLanguages = useCallback(() => {
     setSourceLang(targetLang);
@@ -70,6 +72,7 @@ export function useTranslation() {
   return {
     sourceCode, setSourceCode, targetCode, sourceLang, setSourceLang,
     targetLang, setTargetLang, provider, setProvider, mode, setMode,
+    routingStrategy, setRoutingStrategy,
     isLoading, error, result, swapLanguages, handleTranslate,
   };
 }
